@@ -21,6 +21,7 @@ public partial class frmMain : Form
 
     private readonly List<SourceFileRecord> _scannedFiles = new();
     private readonly List<ConsolidationGroup> _groups = new();
+    private readonly Dictionary<string, CopyResult> _copyResultsByRelativePath = new(StringComparer.OrdinalIgnoreCase);
     private ResultsMode _resultsMode = ResultsMode.Scan;
 
     private Panel pnlHeader = null!;
@@ -491,7 +492,7 @@ public partial class frmMain : Form
         btnScan.Click += BtnScan_Click;
 
         btnAnalyze.Click += BtnAnalyze_Click;
-        btnCopy.Click += (_, _) => SetStatus("Not connected", "Copy will be reconnected after Analyze is confirmed.");
+        btnCopy.Click += BtnCopy_Click;
         btnVerify.Click += (_, _) => SetStatus("Not connected", "Verify will be reconnected after Copy is confirmed.");
         btnReport.Click += (_, _) => SetStatus("Not connected", "Report engine will be connected later.");
         btnOptions.Click += (_, _) => SetStatus("Options", "Preserve Empty Directories is available in the Target panel.");
@@ -814,6 +815,255 @@ public partial class frmMain : Form
         }
     }
 
+
+
+    private async void BtnCopy_Click(object? sender, EventArgs e)
+    {
+        if (_groups.Count == 0)
+        {
+            MessageBox.Show("Please run Analyze before Copy.", "FileForge", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            SetStatus("Copy blocked", "Run Analyze first.", true);
+            return;
+        }
+
+        string targetRoot = txtTargetFolder.Text.Trim();
+
+        if (string.IsNullOrWhiteSpace(targetRoot))
+        {
+            MessageBox.Show("Please select a target master folder before Copy.", "FileForge", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            SetStatus("Copy blocked", "Select a valid target folder first.", true);
+            return;
+        }
+
+        List<string> sourceRoots = lstSourceFolders.Items.Cast<string>().ToList();
+
+        foreach (string sourceRoot in sourceRoots)
+        {
+            if (IsSameOrSubdirectory(targetRoot, sourceRoot))
+            {
+                MessageBox.Show(
+                    "Target folder cannot be the same as, or inside, a selected source folder. Choose a separate target archive folder.",
+                    "Unsafe Target Folder",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+
+                SetStatus("Copy blocked", "Target folder is inside a source folder. Choose a separate archive location.", true);
+                return;
+            }
+        }
+
+        List<ConsolidationGroup> copyableGroups = _groups
+            .Where(g => g.SelectedFile != null &&
+                        (g.Status == ConsolidationStatus.Unique ||
+                         g.Status == ConsolidationStatus.DuplicateSameContent))
+            .ToList();
+
+        int skippedGroups = _groups.Count - copyableGroups.Count;
+
+        if (copyableGroups.Count == 0)
+        {
+            SetStatus("Copy blocked", "No copyable groups found. Resolve conflicts/errors before copying.", true);
+            return;
+        }
+
+        DialogResult confirm = MessageBox.Show(
+            $"Copy {copyableGroups.Count:N0} selected winner file(s) to the target archive?\n\n" +
+            $"Skipped conflicts/errors: {skippedGroups:N0}\n" +
+            $"Target: {targetRoot}",
+            "Confirm Copy",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Question);
+
+        if (confirm != DialogResult.Yes)
+        {
+            SetStatus("Copy cancelled", "No files were copied.");
+            return;
+        }
+
+        try
+        {
+            Cursor = Cursors.WaitCursor;
+            SetCommandButtonsEnabled(false);
+            SetStatus("Copying", "Preparing target archive folder...");
+
+            _copyResultsByRelativePath.Clear();
+            Directory.CreateDirectory(targetRoot);
+
+            int emptyDirectoriesCreated = 0;
+
+            if (chkPreserveEmptyDirectories.Checked)
+            {
+                emptyDirectoriesCreated = await Task.Run(() => CreateEmptyDirectoryStructure(sourceRoots, targetRoot));
+            }
+
+            int copied = 0;
+            int failed = 0;
+            int total = copyableGroups.Count;
+
+            foreach (ConsolidationGroup group in copyableGroups)
+            {
+                SourceFileRecord selectedFile = group.SelectedFile!;
+                string destinationFile = Path.Combine(targetRoot, group.RelativePath);
+
+                SetStatus("Copying", $"Copying {copied + failed + 1:N0}/{total:N0}: {group.RelativePath}");
+
+                CopyResult result = await Task.Run(() => CopyOneFile(group.RelativePath, selectedFile.FullPath, destinationFile));
+                _copyResultsByRelativePath[group.RelativePath] = result;
+
+                if (result.Success)
+                    copied++;
+                else
+                    failed++;
+            }
+
+            foreach (ConsolidationGroup group in _groups)
+            {
+                if (group.Status == ConsolidationStatus.ConflictDifferentContent || group.Status == ConsolidationStatus.Error)
+                {
+                    _copyResultsByRelativePath[group.RelativePath] = new CopyResult
+                    {
+                        RelativePath = group.RelativePath,
+                        SourcePath = group.SelectedFile?.FullPath ?? string.Empty,
+                        DestinationPath = Path.Combine(targetRoot, group.RelativePath),
+                        Success = false,
+                        Skipped = true,
+                        Message = "Skipped because this group is a conflict or error and requires review."
+                    };
+                }
+            }
+
+            _resultsMode = ResultsMode.Copy;
+            RefreshGridAfterCopy();
+
+            string emptyDirText = chkPreserveEmptyDirectories.Checked
+                ? $" Empty folders recreated: {emptyDirectoriesCreated:N0}."
+                : string.Empty;
+
+            if (failed > 0)
+            {
+                SetStatus("Copy completed with errors", $"Copied: {copied:N0}. Failed: {failed:N0}. Skipped: {skippedGroups:N0}.{emptyDirText}", true);
+                MessageBox.Show(
+                    $"Copy completed with errors.\n\nCopied: {copied:N0}\nFailed: {failed:N0}\nSkipped: {skippedGroups:N0}\n{emptyDirText}",
+                    "Copy Completed With Errors",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+            else
+            {
+                SetStatus("Copy complete", $"Copied: {copied:N0}. Skipped: {skippedGroups:N0}.{emptyDirText}");
+            }
+
+            if (dgvResults.Rows.Count > 0)
+                dgvResults.Rows[0].Selected = true;
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Copy failed", ex.Message, true);
+            MessageBox.Show(ex.Message, "Copy Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            SetCommandButtonsEnabled(true);
+            Cursor = Cursors.Default;
+        }
+    }
+
+    private static CopyResult CopyOneFile(string relativePath, string sourceFile, string destinationFile)
+    {
+        CopyResult result = new()
+        {
+            RelativePath = relativePath,
+            SourcePath = sourceFile,
+            DestinationPath = destinationFile
+        };
+
+        try
+        {
+            string? destinationFolder = Path.GetDirectoryName(destinationFile);
+
+            if (!string.IsNullOrWhiteSpace(destinationFolder))
+                Directory.CreateDirectory(destinationFolder);
+
+            File.Copy(sourceFile, destinationFile, true);
+
+            FileInfo sourceInfo = new(sourceFile);
+            FileInfo destinationInfo = new(destinationFile);
+
+            if (!destinationInfo.Exists)
+            {
+                result.Success = false;
+                result.Message = "Destination file was not created.";
+                return result;
+            }
+
+            if (sourceInfo.Length != destinationInfo.Length)
+            {
+                result.Success = false;
+                result.Message = $"Size mismatch after copy. Source: {sourceInfo.Length:N0} bytes. Target: {destinationInfo.Length:N0} bytes.";
+                return result;
+            }
+
+            result.Success = true;
+            result.Message = "Copied successfully. Size matched.";
+            result.BytesCopied = destinationInfo.Length;
+            return result;
+        }
+        catch (Exception ex)
+        {
+            result.Success = false;
+            result.Message = ex.Message;
+            return result;
+        }
+    }
+
+    private static int CreateEmptyDirectoryStructure(IReadOnlyList<string> sourceRoots, string targetRoot)
+    {
+        HashSet<string> createdRelativeDirectories = new(StringComparer.OrdinalIgnoreCase);
+        int createdCount = 0;
+
+        foreach (string sourceRoot in sourceRoots)
+        {
+            if (!Directory.Exists(sourceRoot))
+                continue;
+
+            foreach (string sourceDirectory in Directory.EnumerateDirectories(sourceRoot, "*", SearchOption.AllDirectories))
+            {
+                string relativeDirectory = Path.GetRelativePath(sourceRoot, sourceDirectory);
+
+                if (string.IsNullOrWhiteSpace(relativeDirectory) || relativeDirectory == ".")
+                    continue;
+
+                if (!createdRelativeDirectories.Add(relativeDirectory))
+                    continue;
+
+                string targetDirectory = Path.Combine(targetRoot, relativeDirectory);
+                Directory.CreateDirectory(targetDirectory);
+                createdCount++;
+            }
+        }
+
+        return createdCount;
+    }
+
+    private void RefreshGridAfterCopy()
+    {
+        foreach (DataGridViewRow row in dgvResults.Rows)
+        {
+            string relativePath = row.Cells["RelativePath"].Value?.ToString() ?? string.Empty;
+
+            if (!_copyResultsByRelativePath.TryGetValue(relativePath, out CopyResult? result))
+                continue;
+
+            row.Cells["Status"].Value = result.Skipped
+                ? "Skipped"
+                : result.Success ? "Copied" : "Copy Failed";
+
+            row.DefaultCellStyle.ForeColor = result.Skipped
+                ? Color.FromArgb(125, 82, 0)
+                : result.Success ? Color.FromArgb(0, 95, 55) : Color.FromArgb(175, 45, 45);
+        }
+    }
+
     private void SetCommandButtonsEnabled(bool enabled)
     {
         btnScan.Enabled = enabled;
@@ -834,6 +1084,21 @@ public partial class frmMain : Form
     {
         if (dgvResults.SelectedRows.Count == 0)
             return;
+
+        if (_resultsMode == ResultsMode.Copy)
+        {
+            string relativePath = dgvResults.SelectedRows[0].Cells["RelativePath"].Value?.ToString() ?? string.Empty;
+            ConsolidationGroup? group = _groups.FirstOrDefault(g =>
+                string.Equals(g.RelativePath, relativePath, StringComparison.OrdinalIgnoreCase));
+
+            _copyResultsByRelativePath.TryGetValue(relativePath, out CopyResult? copyResult);
+
+            txtDetails.Text = group == null
+                ? "Select a copied/skipped row to view details."
+                : BuildCopyDetails(group, copyResult);
+
+            return;
+        }
 
         if (_resultsMode == ResultsMode.Analysis)
         {
@@ -921,10 +1186,47 @@ public partial class frmMain : Form
         return sb.ToString();
     }
 
+
+
+    private string BuildCopyDetails(ConsolidationGroup group, CopyResult? copyResult)
+    {
+        StringBuilder sb = new();
+
+        sb.AppendLine("Copy Result");
+        sb.AppendLine("-----------");
+        sb.AppendLine($"Relative Path : {group.RelativePath}");
+        sb.AppendLine($"Decision      : {FormatStatus(group.Status)}");
+        sb.AppendLine($"Reason        : {group.DecisionReason}");
+        sb.AppendLine();
+
+        if (copyResult == null)
+        {
+            sb.AppendLine("Copy Status   : Not copied / no copy result available.");
+        }
+        else
+        {
+            sb.AppendLine($"Copy Status   : {(copyResult.Skipped ? "Skipped" : copyResult.Success ? "Copied" : "Failed")}");
+            sb.AppendLine($"Message       : {copyResult.Message}");
+            sb.AppendLine($"Source        : {copyResult.SourcePath}");
+            sb.AppendLine($"Target        : {copyResult.DestinationPath}");
+
+            if (copyResult.BytesCopied > 0)
+                sb.AppendLine($"Bytes Copied  : {copyResult.BytesCopied:N0} ({FormatBytes(copyResult.BytesCopied)})");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("Analysis Details");
+        sb.AppendLine("----------------");
+        sb.Append(BuildAnalysisDetails(group));
+
+        return sb.ToString();
+    }
+
     private void ClearScanResultsOnly()
     {
         _scannedFiles.Clear();
         _groups.Clear();
+        _copyResultsByRelativePath.Clear();
         _resultsMode = ResultsMode.Scan;
         dgvResults.Rows.Clear();
         txtDetails.Clear();
@@ -982,6 +1284,26 @@ public partial class frmMain : Form
         lblStatusMessage.Text = message;
     }
 
+
+
+    private static bool IsSameOrSubdirectory(string possibleChildPath, string possibleParentPath)
+    {
+        if (string.IsNullOrWhiteSpace(possibleChildPath) || string.IsNullOrWhiteSpace(possibleParentPath))
+            return false;
+
+        string child = Path.GetFullPath(possibleChildPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        string parent = Path.GetFullPath(possibleParentPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        if (string.Equals(child, parent, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        parent += Path.DirectorySeparatorChar;
+        return child.StartsWith(parent, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static string FormatBytes(long bytes)
     {
         string[] units = { "B", "KB", "MB", "GB", "TB" };
@@ -1001,7 +1323,25 @@ public partial class frmMain : Form
 internal enum ResultsMode
 {
     Scan = 0,
-    Analysis = 1
+    Analysis = 1,
+    Copy = 2
+}
+
+internal sealed class CopyResult
+{
+    public string RelativePath { get; set; } = string.Empty;
+
+    public string SourcePath { get; set; } = string.Empty;
+
+    public string DestinationPath { get; set; } = string.Empty;
+
+    public bool Success { get; set; }
+
+    public bool Skipped { get; set; }
+
+    public string Message { get; set; } = string.Empty;
+
+    public long BytesCopied { get; set; }
 }
 
 internal static class MultiFolderPicker
