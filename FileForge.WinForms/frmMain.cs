@@ -1363,9 +1363,15 @@ public partial class frmMain : Form
         if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
             return;
 
+        // Open HTML reports in the user's default browser.
+        // Passing the raw .html file path can follow Windows file association,
+        // which may open VS Code or another editor. A file:// URI is handled
+        // through the browser/URL shell route.
+        string fileUri = new Uri(Path.GetFullPath(filePath)).AbsoluteUri;
+
         Process.Start(new ProcessStartInfo
         {
-            FileName = filePath,
+            FileName = fileUri,
             UseShellExecute = true
         });
     }
