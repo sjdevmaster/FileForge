@@ -19,6 +19,7 @@ public partial class frmMain : Form
     private readonly FileHashService _fileHashService = new();
     private readonly FileSelectionService _fileSelectionService = new();
     private readonly CopyVerificationService _copyVerificationService = new();
+    private readonly TargetPreflightService _targetPreflightService = new();
 
     private readonly List<SourceFileRecord> _scannedFiles = new();
     private readonly List<ConsolidationGroup> _groups = new();
@@ -74,15 +75,15 @@ public partial class frmMain : Form
     private Label lblStatusTitle = null!;
     private Label lblStatusMessage = null!;
 
-    private readonly Color _background = Color.FromArgb(245, 247, 250);
-    private readonly Color _panel = Color.White;
-    private readonly Color _blue = Color.FromArgb(28, 87, 164);
-    private readonly Color _darkBlue = Color.FromArgb(11, 47, 92);
-    private readonly Color _green = Color.FromArgb(18, 128, 78);
+    private readonly Color _background = Color.FromArgb(242, 245, 249);
+    private readonly Color _panel = Color.FromArgb(255, 255, 255);
+    private readonly Color _blue = Color.FromArgb(34, 96, 178);
+    private readonly Color _darkBlue = Color.FromArgb(8, 44, 86);
+    private readonly Color _green = Color.FromArgb(0, 132, 82);
     private readonly Color _purple = Color.FromArgb(96, 69, 170);
     private readonly Color _teal = Color.FromArgb(0, 125, 140);
     private readonly Color _darkButton = Color.FromArgb(68, 78, 92);
-    private readonly Color _muted = Color.FromArgb(75, 88, 108);
+    private readonly Color _muted = Color.FromArgb(80, 94, 116);
 
     public frmMain()
     {
@@ -96,8 +97,8 @@ public partial class frmMain : Form
 
         Text = "FileForge - Professional File Consolidation";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(1250, 700);
-        ClientSize = new Size(1280, 720);
+        MinimumSize = new Size(1250, 720);
+        ClientSize = new Size(1360, 780);
         AutoScaleMode = AutoScaleMode.None;
         Font = new Font("Segoe UI", 9F, FontStyle.Regular);
         BackColor = _background;
@@ -158,19 +159,19 @@ public partial class frmMain : Form
             BackColor = Color.Transparent
         };
 
-        btnScan = CreateButton("Scan", _blue);
-        btnAnalyze = CreateButton("Analyze", _green);
-        btnCopy = CreateButton("Copy", _purple);
-        btnVerify = CreateButton("Verify", _teal);
-        btnReport = CreateButton("Report", _blue);
+        btnScan = CreateButton("1  Scan", _blue);
+        btnAnalyze = CreateButton("2  Analyze", _green);
+        btnCopy = CreateButton("3  Copy", _purple);
+        btnVerify = CreateButton("4  Verify", _teal);
+        btnReport = CreateButton("5  Report", _blue);
         btnOptions = CreateButton("Options", _darkButton);
 
         pnlHeader.Controls.Add(lblTitle);
         pnlHeader.Controls.Add(lblTagline);
         pnlHeader.Controls.Add(CreateStatCard("Sources", lblSources));
-        pnlHeader.Controls.Add(CreateStatCard("Total", lblFiles));
-        pnlHeader.Controls.Add(CreateStatCard("Archive", lblUnique));
-        pnlHeader.Controls.Add(CreateStatCard("Duplicates", lblDuplicates));
+        pnlHeader.Controls.Add(CreateStatCard("Total Files", lblFiles));
+        pnlHeader.Controls.Add(CreateStatCard("To Archive", lblUnique));
+        pnlHeader.Controls.Add(CreateStatCard("Dup. Skipped", lblDuplicates));
         pnlHeader.Controls.Add(CreateStatCard("Conflicts", lblConflicts));
         pnlHeader.Controls.Add(CreateStatCard("Verified", lblVerified));
         pnlHeader.Controls.Add(btnScan);
@@ -215,7 +216,7 @@ public partial class frmMain : Form
     private void BuildSourcePanel()
     {
         pnlSource = CreatePanel();
-        lblSourceTitle = CreateSectionTitle("SOURCE ROOT FOLDERS");
+        lblSourceTitle = CreateSectionTitle("1  SOURCE ROOT FOLDERS");
         btnAddSource = CreateButton("+ Add Source Root", _blue);
         btnRemoveSource = CreateButton("Remove Selected", _darkButton);
         btnClearSources = CreateButton("Clear All", _darkButton);
@@ -251,7 +252,7 @@ public partial class frmMain : Form
     private void BuildTargetPanel()
     {
         pnlTarget = CreatePanel();
-        lblTargetTitle = CreateSectionTitle("TARGET MASTER FOLDER");
+        lblTargetTitle = CreateSectionTitle("2  TARGET MASTER FOLDER");
 
         lblTargetFolder = new Label
         {
@@ -306,7 +307,7 @@ public partial class frmMain : Form
     private void BuildResultsPanel()
     {
         pnlResults = CreatePanel();
-        lblResultsTitle = CreateSectionTitle("PREVIEW / RESULTS");
+        lblResultsTitle = CreateSectionTitle("3  PREVIEW / RESULTS");
 
         dgvResults = new DataGridView
         {
@@ -325,7 +326,7 @@ public partial class frmMain : Form
             ScrollBars = ScrollBars.Both
         };
 
-        dgvResults.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(235, 242, 252);
+        dgvResults.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(231, 239, 250);
         dgvResults.ColumnHeadersDefaultCellStyle.ForeColor = _darkBlue;
         dgvResults.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
         dgvResults.DefaultCellStyle.Font = new Font("Segoe UI", 9F, FontStyle.Regular);
@@ -340,7 +341,7 @@ public partial class frmMain : Form
     private void BuildDetailsPanel()
     {
         pnlDetails = CreatePanel();
-        lblDetailsTitle = CreateSectionTitle("DETAILS");
+        lblDetailsTitle = CreateSectionTitle("4  DETAILS / AUDIT TRAIL");
 
         txtDetails = new TextBox
         {
@@ -417,11 +418,11 @@ public partial class frmMain : Form
         {
             Text = text,
             AutoSize = false,
-            Height = 30,
+            Height = 32,
             BackColor = backColor,
             ForeColor = Color.White,
             FlatStyle = FlatStyle.Flat,
-            Font = new Font("Segoe UI", 8.8F, FontStyle.Bold),
+            Font = new Font("Segoe UI", 9F, FontStyle.Bold),
             UseVisualStyleBackColor = false,
             TextAlign = ContentAlignment.MiddleCenter
         };
@@ -513,31 +514,31 @@ public partial class frmMain : Form
 
         pnlHeader.SetBounds(OuterMargin, 8, contentWidth, HeaderHeight);
 
-        lblTitle.SetBounds(0, 4, 380, 45);
-        lblTagline.SetBounds(3, 50, 430, 24);
+        lblTitle.SetBounds(6, 8, 390, 44);
+        lblTagline.SetBounds(9, 54, 450, 24);
 
         int statGap = 8;
         int statCount = 6;
-        int statTotalWidth = Math.Min(980, Math.Max(900, contentWidth - 330));
+        int statTotalWidth = Math.Min(1060, Math.Max(940, contentWidth - 330));
         int statStartX = Math.Max(330, contentWidth - statTotalWidth);
-        int statY = 14;
-        int statWidth = Math.Max(140, (contentWidth - statStartX - (statGap * (statCount - 1))) / statCount);
-        int statHeight = 44;
+        int statY = 12;
+        int statWidth = Math.Max(150, (contentWidth - statStartX - (statGap * (statCount - 1))) / statCount);
+        int statHeight = 48;
 
         for (int i = 0; i < statCount; i++)
         {
             LayoutStatCard(i, statStartX + ((statWidth + statGap) * i), statY, statWidth, statHeight);
         }
 
-        int commandY = statY + statHeight + 8;
-        int totalCommandWidth = 90 + 105 + 90 + 90 + 90 + 95 + (8 * 5);
+        int commandY = statY + statHeight + 10;
+        int totalCommandWidth = 100 + 112 + 100 + 100 + 100 + 105 + (8 * 5);
         int commandX = Math.Max(statStartX, contentWidth - totalCommandWidth);
-        SetButtonBounds(btnScan, ref commandX, commandY, 90);
-        SetButtonBounds(btnAnalyze, ref commandX, commandY, 105);
-        SetButtonBounds(btnCopy, ref commandX, commandY, 90);
-        SetButtonBounds(btnVerify, ref commandX, commandY, 90);
-        SetButtonBounds(btnReport, ref commandX, commandY, 90);
-        SetButtonBounds(btnOptions, ref commandX, commandY, 95);
+        SetButtonBounds(btnScan, ref commandX, commandY, 100);
+        SetButtonBounds(btnAnalyze, ref commandX, commandY, 112);
+        SetButtonBounds(btnCopy, ref commandX, commandY, 100);
+        SetButtonBounds(btnVerify, ref commandX, commandY, 100);
+        SetButtonBounds(btnReport, ref commandX, commandY, 100);
+        SetButtonBounds(btnOptions, ref commandX, commandY, 105);
 
         int topY = pnlHeader.Bottom + 4;
         int panelWidth = (contentWidth - PanelGap) / 2;
@@ -583,13 +584,13 @@ public partial class frmMain : Form
             _ => lblVerified
         };
 
-        caption?.SetBounds(10, 10, Math.Max(70, width - 72), 22);
-        value.SetBounds(width - 62, 6, 52, height - 12);
+        caption?.SetBounds(12, 12, Math.Max(84, width - 78), 22);
+        value.SetBounds(width - 68, 6, 58, height - 12);
     }
 
     private static void SetButtonBounds(Button button, ref int x, int y, int width)
     {
-        button.SetBounds(x, y, width, 30);
+        button.SetBounds(x, y, width, 32);
         x += width + 8;
     }
 
@@ -597,11 +598,11 @@ public partial class frmMain : Form
     {
         int w = pnlSource.Width;
         lblSourceTitle.SetBounds(12, 8, 250, 24);
-        btnAddSource.SetBounds(12, 38, 150, 30);
-        btnRemoveSource.SetBounds(170, 38, 145, 30);
-        btnClearSources.SetBounds(323, 38, 90, 30);
-        lstSourceFolders.SetBounds(12, 78, Math.Max(200, w - 24), 82);
-        lblSourceTip.SetBounds(12, 162, Math.Max(200, w - 24), 22);
+        btnAddSource.SetBounds(14, 38, 155, 32);
+        btnRemoveSource.SetBounds(180, 38, 150, 32);
+        btnClearSources.SetBounds(340, 38, 110, 32);
+        lstSourceFolders.SetBounds(14, 80, Math.Max(200, w - 28), 80);
+        lblSourceTip.SetBounds(14, 162, Math.Max(200, w - 28), 22);
     }
 
     private void LayoutTargetPanel()
@@ -610,9 +611,9 @@ public partial class frmMain : Form
         lblTargetTitle.SetBounds(12, 8, 250, 24);
         lblTargetFolder.SetBounds(12, 42, 100, 24);
         txtTargetFolder.SetBounds(112, 40, Math.Max(160, w - 184), 26);
-        btnBrowseTarget.SetBounds(w - 62, 38, 50, 30);
-        btnSelectTarget.SetBounds(112, 78, 165, 30);
-        btnOpenTarget.SetBounds(285, 78, 150, 30);
+        btnBrowseTarget.SetBounds(w - 62, 38, 50, 32);
+        btnSelectTarget.SetBounds(112, 78, 175, 32);
+        btnOpenTarget.SetBounds(298, 78, 160, 32);
         chkPreserveEmptyDirectories.SetBounds(112, 120, 230, 24);
         lblTargetMode.SetBounds(112, 148, Math.Max(200, w - 124), 24);
     }
@@ -853,20 +854,25 @@ public partial class frmMain : Form
 
         List<string> sourceRoots = lstSourceFolders.Items.Cast<string>().ToList();
 
-        foreach (string sourceRoot in sourceRoots)
-        {
-            if (IsSameOrSubdirectory(targetRoot, sourceRoot))
-            {
-                MessageBox.Show(
-                    "Target folder cannot be the same as, or inside, a selected source folder. Choose a separate target archive folder.",
-                    "Unsafe Target Folder",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
+        TargetPreflightResult targetPreflight = _targetPreflightService.ValidateNewArchiveTarget(
+            sourceRoots,
+            targetRoot);
 
-                SetStatus("Copy blocked", "Target folder is inside a source folder. Choose a separate archive location.", true);
-                return;
-            }
+        if (!targetPreflight.IsValid)
+        {
+            MessageBox.Show(
+                "Target safety check failed. FileForge V1 creates a clean new archive only.\n\n" +
+                targetPreflight.Message,
+                "Target Safety Check Failed",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+
+            SetStatus("Copy blocked", "Target safety check failed. Choose a separate empty target folder.", true);
+            return;
         }
+
+        targetRoot = targetPreflight.NormalizedTargetRoot;
+        txtTargetFolder.Text = targetRoot;
 
         List<ConsolidationGroup> copyableGroups = _groups
             .Where(g => g.SelectedFile != null &&
@@ -1121,7 +1127,14 @@ public partial class frmMain : Form
             if (!string.IsNullOrWhiteSpace(destinationFolder))
                 Directory.CreateDirectory(destinationFolder);
 
-            File.Copy(sourceFile, destinationFile, true);
+            if (File.Exists(destinationFile))
+            {
+                result.Success = false;
+                result.Message = "Destination file already exists. FileForge V1 never overwrites existing target files automatically.";
+                return result;
+            }
+
+            File.Copy(sourceFile, destinationFile, false);
 
             FileInfo sourceInfo = new(sourceFile);
             FileInfo destinationInfo = new(destinationFile);

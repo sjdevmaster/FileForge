@@ -13,28 +13,90 @@ public sealed class FileCopyService
         if (string.IsNullOrWhiteSpace(destinationRoot))
             throw new ArgumentException("Destination root folder is required.", nameof(destinationRoot));
 
-        Directory.CreateDirectory(destinationRoot);
+        string normalizedDestinationRoot = NormalizeDirectoryPath(destinationRoot);
+
+        if (!Directory.Exists(normalizedDestinationRoot))
+            throw new DirectoryNotFoundException($"Destination root folder does not exist: {normalizedDestinationRoot}");
+
+        ValidateTargetSafety(normalizedDestinationRoot, sourceRoots);
 
         if (preserveEmptyDirectories && sourceRoots != null)
         {
-            CreateDirectoryStructure(sourceRoots, destinationRoot);
+            CreateDirectoryStructure(sourceRoots, normalizedDestinationRoot);
         }
 
         foreach (ConsolidationGroup group in groups)
         {
-            if (group.SelectedFile == null)
+            if (!IsCopyableGroup(group))
                 continue;
 
-            string destinationFile = Path.Combine(destinationRoot, group.RelativePath);
+            SourceFileRecord selectedFile = group.SelectedFile!;
+            string destinationFile = Path.Combine(normalizedDestinationRoot, group.RelativePath);
             string? destinationFolder = Path.GetDirectoryName(destinationFile);
+
+            if (!File.Exists(selectedFile.FullPath))
+                throw new FileNotFoundException($"Selected source file does not exist: {selectedFile.FullPath}", selectedFile.FullPath);
 
             if (!string.IsNullOrWhiteSpace(destinationFolder))
             {
                 Directory.CreateDirectory(destinationFolder);
             }
 
-            File.Copy(group.SelectedFile.FullPath, destinationFile, true);
+            if (File.Exists(destinationFile))
+            {
+                throw new IOException(
+                    "Copy blocked by FileForge Target Safety Rule V1. " +
+                    $"Target file already exists and will not be overwritten: {destinationFile}");
+            }
+
+            File.Copy(selectedFile.FullPath, destinationFile, overwrite: false);
         }
+    }
+
+    private static void ValidateTargetSafety(string destinationRoot, IEnumerable<string>? sourceRoots)
+    {
+        if (Directory.EnumerateFileSystemEntries(destinationRoot).Any())
+        {
+            throw new IOException(
+                "Copy blocked by FileForge Target Safety Rule V1. " +
+                "Target folder must be empty before Copy.");
+        }
+
+        if (sourceRoots == null)
+            return;
+
+        foreach (string sourceRootValue in sourceRoots.Where(path => !string.IsNullOrWhiteSpace(path)))
+        {
+            string sourceRoot = NormalizeDirectoryPath(sourceRootValue);
+
+            if (PathsEqual(sourceRoot, destinationRoot))
+            {
+                throw new IOException(
+                    "Copy blocked by FileForge Target Safety Rule V1. " +
+                    $"Target folder cannot be the same as a source root: {sourceRoot}");
+            }
+
+            if (IsChildPath(parentPath: sourceRoot, childPath: destinationRoot))
+            {
+                throw new IOException(
+                    "Copy blocked by FileForge Target Safety Rule V1. " +
+                    $"Target folder cannot be inside a source root. Source: {sourceRoot} | Target: {destinationRoot}");
+            }
+
+            if (IsChildPath(parentPath: destinationRoot, childPath: sourceRoot))
+            {
+                throw new IOException(
+                    "Copy blocked by FileForge Target Safety Rule V1. " +
+                    $"Source root cannot be inside the target folder. Source: {sourceRoot} | Target: {destinationRoot}");
+            }
+        }
+    }
+
+    private static bool IsCopyableGroup(ConsolidationGroup group)
+    {
+        return group.SelectedFile != null &&
+               (group.Status == ConsolidationStatus.Unique ||
+                group.Status == ConsolidationStatus.DuplicateSameContent);
     }
 
     private static void CreateDirectoryStructure(IEnumerable<string> sourceRoots, string destinationRoot)
@@ -52,8 +114,42 @@ public sealed class FileCopyService
                     continue;
 
                 string destinationDirectory = Path.Combine(destinationRoot, relativeDirectory);
+
+                if (File.Exists(destinationDirectory))
+                {
+                    throw new IOException(
+                        "Copy blocked by FileForge Target Safety Rule V1. " +
+                        $"A file already exists where a directory is required: {destinationDirectory}");
+                }
+
                 Directory.CreateDirectory(destinationDirectory);
             }
         }
+    }
+
+    private static string NormalizeDirectoryPath(string path)
+    {
+        string fullPath = Path.GetFullPath(path.Trim());
+        return fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
+
+    private static bool PathsEqual(string left, string right)
+    {
+        return string.Equals(
+            NormalizeDirectoryPath(left),
+            NormalizeDirectoryPath(right),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsChildPath(string parentPath, string childPath)
+    {
+        string parent = NormalizeDirectoryPath(parentPath);
+        string child = NormalizeDirectoryPath(childPath);
+
+        if (PathsEqual(parent, child))
+            return false;
+
+        string parentWithSeparator = parent + Path.DirectorySeparatorChar;
+        return child.StartsWith(parentWithSeparator, StringComparison.OrdinalIgnoreCase);
     }
 }
