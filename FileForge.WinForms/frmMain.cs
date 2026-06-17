@@ -20,12 +20,17 @@ public partial class frmMain : Form
     private readonly FileSelectionService _fileSelectionService = new();
     private readonly CopyVerificationService _copyVerificationService = new();
     private readonly TargetPreflightService _targetPreflightService = new();
+    private readonly ReportService _reportService = new();
 
     private readonly List<SourceFileRecord> _scannedFiles = new();
     private readonly List<ConsolidationGroup> _groups = new();
     private readonly Dictionary<string, CopyResult> _copyResultsByRelativePath = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, CopyVerificationResult> _verificationResultsByRelativePath = new(StringComparer.OrdinalIgnoreCase);
     private ResultsMode _resultsMode = ResultsMode.Scan;
+
+    private bool _openTargetFolderAfterCopy;
+    private bool _openAuditReportAfterGeneration = true;
+    private bool _includeFullSourcePathsInReport = true;
 
     private Panel pnlHeader = null!;
     private Label lblTitle = null!;
@@ -499,8 +504,8 @@ public partial class frmMain : Form
         btnAnalyze.Click += BtnAnalyze_Click;
         btnCopy.Click += BtnCopy_Click;
         btnVerify.Click += BtnVerify_Click;
-        btnReport.Click += (_, _) => SetStatus("Not connected", "Report engine will be connected later.");
-        btnOptions.Click += (_, _) => SetStatus("Options", "Preserve Empty Directories is available in the Target panel.");
+        btnReport.Click += BtnReport_Click;
+        btnOptions.Click += BtnOptions_Click;
     }
 
     private void LayoutForm()
@@ -982,6 +987,9 @@ public partial class frmMain : Form
             else
             {
                 SetStatus("Copy complete", $"Copied: {copied:N0}. Skipped: {skippedGroups:N0}.{emptyDirText}");
+
+                if (_openTargetFolderAfterCopy)
+                    OpenFolder(targetRoot);
             }
 
             if (dgvResults.Rows.Count > 0)
@@ -1109,6 +1117,269 @@ public partial class frmMain : Form
             SetCommandButtonsEnabled(true);
             Cursor = Cursors.Default;
         }
+    }
+
+    private void BtnReport_Click(object? sender, EventArgs e)
+    {
+        if (_scannedFiles.Count == 0)
+        {
+            MessageBox.Show("Please run Scan before generating a report.", "FileForge", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            SetStatus("Report blocked", "Run Scan first.", true);
+            return;
+        }
+
+        if (_groups.Count == 0)
+        {
+            MessageBox.Show("Please run Analyze before generating a report.", "FileForge", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            SetStatus("Report blocked", "Run Analyze first.", true);
+            return;
+        }
+
+        string targetRoot = txtTargetFolder.Text.Trim();
+
+        if (string.IsNullOrWhiteSpace(targetRoot) || !Directory.Exists(targetRoot))
+        {
+            MessageBox.Show("Please select a valid target master folder before generating a report.", "FileForge", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            SetStatus("Report blocked", "Select a valid target folder first.", true);
+            return;
+        }
+
+        if (_copyResultsByRelativePath.Count == 0)
+        {
+            MessageBox.Show("Please run Copy before generating the audit report.", "FileForge", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            SetStatus("Report blocked", "Run Copy first.", true);
+            return;
+        }
+
+        if (_verificationResultsByRelativePath.Count == 0)
+        {
+            DialogResult proceed = MessageBox.Show(
+                "Verification has not been completed in this session. The report can still be generated, but the Verify section will show 'Not performed'.\n\nContinue?",
+                "Generate Report Without Verification?",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+
+            if (proceed != DialogResult.Yes)
+            {
+                SetStatus("Report cancelled", "No audit report was generated.");
+                return;
+            }
+        }
+
+        try
+        {
+            Cursor = Cursors.WaitCursor;
+            SetCommandButtonsEnabled(false);
+            SetStatus("Generating report", "Creating HTML audit report...");
+
+            ArchiveStatistics stats = CalculateArchiveStatistics();
+
+            AuditReportRequest request = new()
+            {
+                GeneratedAt = DateTime.Now,
+                ApplicationName = "FileForge",
+                ApplicationMode = "New Archive Mode",
+                HashAlgorithm = "SHA256",
+                TargetSafetyPolicy = "Target must be separate from source roots, must not contain source roots, must be empty before Copy, and existing files are never overwritten.",
+                SourceRoots = lstSourceFolders.Items.Cast<string>().ToList(),
+                TargetRoot = targetRoot,
+                PreserveEmptyDirectories = chkPreserveEmptyDirectories.Checked,
+                TotalFiles = _scannedFiles.Count,
+                UniqueGroups = stats.UniqueGroups,
+                DuplicateGroups = stats.DuplicateGroups,
+                ToArchiveFiles = stats.ToArchiveFiles,
+                DuplicateFilesSkipped = stats.DuplicateFilesSkipped,
+                ConflictGroups = stats.ConflictGroups,
+                ScannedFiles = _scannedFiles.ToList(),
+                Groups = _groups.ToList(),
+                CopyRecords = BuildAuditCopyRecords(),
+                VerificationResults = _verificationResultsByRelativePath.Values
+                    .OrderBy(v => v.RelativePath, StringComparer.OrdinalIgnoreCase)
+                    .ToList(),
+                IncludeFullSourcePaths = _includeFullSourcePathsInReport
+            };
+
+            AuditReportResult result = _reportService.GenerateHtmlReport(request);
+
+            SetStatus("Report generated", result.HtmlReportPath);
+
+            MessageBox.Show(
+                "Audit report generated successfully.\n\n" + result.HtmlReportPath,
+                "Report Generated",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+
+            if (_openAuditReportAfterGeneration)
+                OpenFile(result.HtmlReportPath);
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Report failed", ex.Message, true);
+            MessageBox.Show(ex.Message, "Report Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            SetCommandButtonsEnabled(true);
+            Cursor = Cursors.Default;
+        }
+    }
+
+    private void BtnOptions_Click(object? sender, EventArgs e)
+    {
+        using Form dialog = new()
+        {
+            Text = "FileForge Options",
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            ClientSize = new Size(520, 320),
+            BackColor = _background,
+            Font = new Font("Segoe UI", 9F, FontStyle.Regular)
+        };
+
+        Label title = new()
+        {
+            Text = "Options",
+            Font = new Font("Segoe UI", 16F, FontStyle.Bold),
+            ForeColor = _darkBlue,
+            AutoSize = false,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+
+        CheckBox chkPreserve = new()
+        {
+            Text = "Preserve empty directories during Copy",
+            Checked = chkPreserveEmptyDirectories.Checked,
+            AutoSize = false
+        };
+
+        CheckBox chkOpenTarget = new()
+        {
+            Text = "Open target folder after successful Copy",
+            Checked = _openTargetFolderAfterCopy,
+            AutoSize = false
+        };
+
+        CheckBox chkOpenReport = new()
+        {
+            Text = "Open HTML audit report after generation",
+            Checked = _openAuditReportAfterGeneration,
+            AutoSize = false
+        };
+
+        CheckBox chkFullPaths = new()
+        {
+            Text = "Include full source paths in audit report",
+            Checked = _includeFullSourcePathsInReport,
+            AutoSize = false
+        };
+
+        Label targetMode = new()
+        {
+            Text = "Target Mode: New Archive Mode only. Target must be empty before Copy. Existing target files are never overwritten.",
+            AutoSize = false,
+            ForeColor = _muted,
+            BackColor = _panel,
+            BorderStyle = BorderStyle.FixedSingle,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Padding = new Padding(10, 0, 10, 0)
+        };
+
+        Button ok = new()
+        {
+            Text = "OK",
+            DialogResult = DialogResult.OK,
+            BackColor = _blue,
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+
+        Button cancel = new()
+        {
+            Text = "Cancel",
+            DialogResult = DialogResult.Cancel,
+            BackColor = _darkButton,
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+
+        ok.FlatAppearance.BorderSize = 0;
+        cancel.FlatAppearance.BorderSize = 0;
+
+        title.SetBounds(18, 14, 300, 34);
+        chkPreserve.SetBounds(24, 64, 430, 28);
+        chkOpenTarget.SetBounds(24, 98, 430, 28);
+        chkOpenReport.SetBounds(24, 132, 430, 28);
+        chkFullPaths.SetBounds(24, 166, 430, 28);
+        targetMode.SetBounds(24, 210, 472, 46);
+        ok.SetBounds(304, 274, 90, 30);
+        cancel.SetBounds(406, 274, 90, 30);
+
+        dialog.Controls.Add(title);
+        dialog.Controls.Add(chkPreserve);
+        dialog.Controls.Add(chkOpenTarget);
+        dialog.Controls.Add(chkOpenReport);
+        dialog.Controls.Add(chkFullPaths);
+        dialog.Controls.Add(targetMode);
+        dialog.Controls.Add(ok);
+        dialog.Controls.Add(cancel);
+        dialog.AcceptButton = ok;
+        dialog.CancelButton = cancel;
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            SetStatus("Options cancelled", "No option changes were applied.");
+            return;
+        }
+
+        chkPreserveEmptyDirectories.Checked = chkPreserve.Checked;
+        _openTargetFolderAfterCopy = chkOpenTarget.Checked;
+        _openAuditReportAfterGeneration = chkOpenReport.Checked;
+        _includeFullSourcePathsInReport = chkFullPaths.Checked;
+
+        SetStatus("Options updated", "FileForge options were updated for this session.");
+    }
+
+    private List<AuditCopyRecord> BuildAuditCopyRecords()
+    {
+        return _copyResultsByRelativePath.Values
+            .OrderBy(r => r.RelativePath, StringComparer.OrdinalIgnoreCase)
+            .Select(r => new AuditCopyRecord
+            {
+                RelativePath = r.RelativePath,
+                SourcePath = r.SourcePath,
+                DestinationPath = r.DestinationPath,
+                Success = r.Success,
+                Skipped = r.Skipped,
+                Message = r.Message,
+                BytesCopied = r.BytesCopied
+            })
+            .ToList();
+    }
+
+    private static void OpenFile(string filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            return;
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = filePath,
+            UseShellExecute = true
+        });
+    }
+
+    private static void OpenFolder(string folderPath)
+    {
+        if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
+            return;
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = folderPath,
+            UseShellExecute = true
+        });
     }
 
     private static CopyResult CopyOneFile(string relativePath, string sourceFile, string destinationFile)
