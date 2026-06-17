@@ -10,7 +10,7 @@ public partial class frmMain : Form
 {
     private const int OuterMargin = 18;
     private const int PanelGap = 12;
-    private const int HeaderHeight = 120;
+    private const int HeaderHeight = 124;
     private const int SourceTargetHeight = 190;
     private const int DetailsHeight = 128;
     private const int StatusHeight = 42;
@@ -35,6 +35,7 @@ public partial class frmMain : Form
     private readonly Label lblUnique = new();
     private readonly Label lblDuplicates = new();
     private readonly Label lblConflicts = new();
+    private readonly Label lblVerified = new();
 
     private Button btnScan = null!;
     private Button btnAnalyze = null!;
@@ -95,7 +96,7 @@ public partial class frmMain : Form
 
         Text = "FileForge - Professional File Consolidation";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(1100, 700);
+        MinimumSize = new Size(1250, 700);
         ClientSize = new Size(1280, 720);
         AutoScaleMode = AutoScaleMode.None;
         Font = new Font("Segoe UI", 9F, FontStyle.Regular);
@@ -167,10 +168,11 @@ public partial class frmMain : Form
         pnlHeader.Controls.Add(lblTitle);
         pnlHeader.Controls.Add(lblTagline);
         pnlHeader.Controls.Add(CreateStatCard("Sources", lblSources));
-        pnlHeader.Controls.Add(CreateStatCard("Total Files", lblFiles));
-        pnlHeader.Controls.Add(CreateStatCard("To Archive", lblUnique));
-        pnlHeader.Controls.Add(CreateStatCard("Dup. Skipped", lblDuplicates));
+        pnlHeader.Controls.Add(CreateStatCard("Total", lblFiles));
+        pnlHeader.Controls.Add(CreateStatCard("Archive", lblUnique));
+        pnlHeader.Controls.Add(CreateStatCard("Duplicates", lblDuplicates));
         pnlHeader.Controls.Add(CreateStatCard("Conflicts", lblConflicts));
+        pnlHeader.Controls.Add(CreateStatCard("Verified", lblVerified));
         pnlHeader.Controls.Add(btnScan);
         pnlHeader.Controls.Add(btnAnalyze);
         pnlHeader.Controls.Add(btnCopy);
@@ -192,7 +194,7 @@ public partial class frmMain : Form
             Text = caption,
             AutoSize = false,
             TextAlign = ContentAlignment.MiddleLeft,
-            Font = new Font("Segoe UI", 8.5F, FontStyle.Regular),
+            Font = new Font("Segoe UI", 7.8F, FontStyle.Regular),
             ForeColor = _muted,
             BackColor = _panel
         };
@@ -200,7 +202,7 @@ public partial class frmMain : Form
         valueLabel.Text = "0";
         valueLabel.AutoSize = false;
         valueLabel.TextAlign = ContentAlignment.MiddleRight;
-        valueLabel.Font = new Font("Segoe UI", 14.5F, FontStyle.Bold);
+        valueLabel.Font = new Font("Segoe UI", 13.5F, FontStyle.Bold);
         valueLabel.ForeColor = _darkBlue;
         valueLabel.BackColor = _panel;
 
@@ -514,19 +516,22 @@ public partial class frmMain : Form
         lblTitle.SetBounds(0, 4, 380, 45);
         lblTagline.SetBounds(3, 50, 430, 24);
 
-        int statStartX = Math.Max(465, contentWidth - 690);
-        int statY = 18;
         int statGap = 8;
-        int statWidth = Math.Max(118, (contentWidth - statStartX - (statGap * 4)) / 5);
+        int statCount = 6;
+        int statTotalWidth = Math.Min(980, Math.Max(900, contentWidth - 330));
+        int statStartX = Math.Max(330, contentWidth - statTotalWidth);
+        int statY = 14;
+        int statWidth = Math.Max(140, (contentWidth - statStartX - (statGap * (statCount - 1))) / statCount);
         int statHeight = 44;
-        LayoutStatCard(0, statStartX, statY, statWidth, statHeight);
-        LayoutStatCard(1, statStartX + ((statWidth + statGap) * 1), statY, statWidth, statHeight);
-        LayoutStatCard(2, statStartX + ((statWidth + statGap) * 2), statY, statWidth, statHeight);
-        LayoutStatCard(3, statStartX + ((statWidth + statGap) * 3), statY, statWidth, statHeight);
-        LayoutStatCard(4, statStartX + ((statWidth + statGap) * 4), statY, statWidth, statHeight);
 
-        int commandY = 80;
-        int commandX = 0;
+        for (int i = 0; i < statCount; i++)
+        {
+            LayoutStatCard(i, statStartX + ((statWidth + statGap) * i), statY, statWidth, statHeight);
+        }
+
+        int commandY = statY + statHeight + 8;
+        int totalCommandWidth = 90 + 105 + 90 + 90 + 90 + 95 + (8 * 5);
+        int commandX = Math.Max(statStartX, contentWidth - totalCommandWidth);
         SetButtonBounds(btnScan, ref commandX, commandY, 90);
         SetButtonBounds(btnAnalyze, ref commandX, commandY, 105);
         SetButtonBounds(btnCopy, ref commandX, commandY, 90);
@@ -561,7 +566,7 @@ public partial class frmMain : Form
 
     private void LayoutStatCard(int index, int x, int y, int width, int height)
     {
-        if (index < 0 || index >= 5)
+        if (index < 0 || index >= 6)
             return;
 
         Control card = pnlHeader.Controls.OfType<Panel>().ElementAt(index);
@@ -574,11 +579,12 @@ public partial class frmMain : Form
             1 => lblFiles,
             2 => lblUnique,
             3 => lblDuplicates,
-            _ => lblConflicts
+            4 => lblConflicts,
+            _ => lblVerified
         };
 
-        caption?.SetBounds(10, 9, Math.Max(30, width - 88), 24);
-        value.SetBounds(width - 78, 4, 68, height - 8);
+        caption?.SetBounds(10, 10, Math.Max(70, width - 72), 22);
+        value.SetBounds(width - 62, 6, 52, height - 12);
     }
 
     private static void SetButtonBounds(Button button, ref int x, int y, int width)
@@ -1067,7 +1073,8 @@ public partial class frmMain : Form
                 _scannedFiles.Count,
                 stats.ToArchiveFiles,
                 stats.DuplicateFilesSkipped,
-                stats.ConflictGroups);
+                stats.ConflictGroups,
+                verified);
 
             if (failed > 0)
             {
@@ -1478,13 +1485,14 @@ public partial class frmMain : Form
         txtDetails.Clear();
     }
 
-    private void SetStatValues(int sources, int totalFiles, int toArchiveFiles, int duplicateFilesSkipped, int conflictGroups)
+    private void SetStatValues(int sources, int totalFiles, int toArchiveFiles, int duplicateFilesSkipped, int conflictGroups, int verifiedOk = 0)
     {
         lblSources.Text = sources.ToString("N0");
         lblFiles.Text = totalFiles.ToString("N0");
         lblUnique.Text = toArchiveFiles.ToString("N0");
         lblDuplicates.Text = duplicateFilesSkipped.ToString("N0");
         lblConflicts.Text = conflictGroups.ToString("N0");
+        lblVerified.Text = verifiedOk.ToString("N0");
     }
 
     private int SourceOrderIndex(string sourceRoot)
