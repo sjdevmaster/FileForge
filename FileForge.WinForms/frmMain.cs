@@ -736,7 +736,7 @@ public partial class frmMain : Form
         }
     }
 
-    private void BtnAnalyze_Click(object? sender, EventArgs e)
+    private async void BtnAnalyze_Click(object? sender, EventArgs e)
     {
         if (_scannedFiles.Count == 0)
         {
@@ -748,10 +748,23 @@ public partial class frmMain : Form
         try
         {
             Cursor = Cursors.WaitCursor;
-            SetStatus("Analyzing", "Checking relative paths and hashing only files that need comparison...");
-            System.Windows.Forms.Application.DoEvents();
+            SetCommandButtonsEnabled(false);
+            SetStatus("Analyzing", "Preparing duplicate/conflict analysis. Please wait...");
 
-            int hashedCount = _fileHashService.CalculateRequiredHashes(_scannedFiles);
+            Progress<FileHashProgress> progress = new(hashProgress =>
+            {
+                if (hashProgress.Total <= 0)
+                {
+                    SetStatus("Analyzing", "No same-size duplicate-path files require hashing.");
+                    return;
+                }
+
+                SetStatus(
+                    "Analyzing",
+                    $"Hashing required files {hashProgress.Completed:N0}/{hashProgress.Total:N0}: {hashProgress.CurrentFile}");
+            });
+
+            int hashedCount = await _fileHashService.CalculateRequiredHashesAsync(_scannedFiles, progress);
             List<string> sourceOrder = lstSourceFolders.Items.Cast<string>().ToList();
 
             _groups.Clear();
@@ -759,6 +772,7 @@ public partial class frmMain : Form
 
             _resultsMode = ResultsMode.Analysis;
             dgvResults.Rows.Clear();
+            dgvResults.SuspendLayout();
 
             foreach (ConsolidationGroup group in _groups)
             {
@@ -775,6 +789,8 @@ public partial class frmMain : Form
                 int rowIndex = dgvResults.Rows.Count - 1;
                 dgvResults.Rows[rowIndex].DefaultCellStyle.ForeColor = StatusColor(group.Status);
             }
+
+            dgvResults.ResumeLayout();
 
             int uniqueCount = _groups.Count(g => g.Status == ConsolidationStatus.Unique);
             int duplicateCount = _groups.Count(g => g.Status == ConsolidationStatus.DuplicateSameContent);
@@ -793,8 +809,25 @@ public partial class frmMain : Form
         }
         finally
         {
+            SetCommandButtonsEnabled(true);
             Cursor = Cursors.Default;
         }
+    }
+
+    private void SetCommandButtonsEnabled(bool enabled)
+    {
+        btnScan.Enabled = enabled;
+        btnAnalyze.Enabled = enabled;
+        btnCopy.Enabled = enabled;
+        btnVerify.Enabled = enabled;
+        btnReport.Enabled = enabled;
+        btnOptions.Enabled = enabled;
+        btnAddSource.Enabled = enabled;
+        btnRemoveSource.Enabled = enabled;
+        btnClearSources.Enabled = enabled;
+        btnBrowseTarget.Enabled = enabled;
+        btnSelectTarget.Enabled = enabled;
+        btnOpenTarget.Enabled = enabled;
     }
 
     private void DgvResults_SelectionChanged(object? sender, EventArgs e)

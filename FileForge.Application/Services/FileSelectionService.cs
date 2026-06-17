@@ -34,11 +34,24 @@ public sealed class FileSelectionService
             return group;
         }
 
+        int distinctSizeCount = files
+            .Select(f => f.SizeBytes)
+            .Distinct()
+            .Count();
+
+        if (distinctSizeCount > 1)
+        {
+            group.SelectedFile = SelectBestCandidate(files, sourceRootOrder);
+            group.Status = ConsolidationStatus.ConflictDifferentContent;
+            group.DecisionReason = "Same relative path but different file sizes. Content differs; hash not required.";
+            return group;
+        }
+
         if (files.Any(f => !f.HashCalculated))
         {
             group.SelectedFile = SelectBestCandidate(files, sourceRootOrder);
             group.Status = ConsolidationStatus.Error;
-            group.DecisionReason = "One or more files with the same relative path could not be hashed. Review before copying.";
+            group.DecisionReason = "One or more same-size files with the same relative path could not be hashed. Review before copying.";
             return group;
         }
 
@@ -51,13 +64,13 @@ public sealed class FileSelectionService
         {
             group.SelectedFile = SelectFirstSourceCandidate(files, sourceRootOrder);
             group.Status = ConsolidationStatus.DuplicateSameContent;
-            group.DecisionReason = "Same relative path and same SHA256 content hash. First selected source root wins; other copies are skipped.";
+            group.DecisionReason = "Same relative path, same file size, and same SHA256 content hash. First selected source root wins; other copies are skipped.";
             return group;
         }
 
         group.SelectedFile = SelectBestCandidate(files, sourceRootOrder);
         group.Status = ConsolidationStatus.ConflictDifferentContent;
-        group.DecisionReason = "Same relative path but different SHA256 content hashes. Latest modified/larger file shown as provisional winner; manual review recommended.";
+        group.DecisionReason = "Same relative path and same file size, but different SHA256 content hashes. Latest modified/larger file shown as provisional winner; manual review recommended.";
         return group;
     }
 
