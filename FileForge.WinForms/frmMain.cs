@@ -1,48 +1,26 @@
-using System;
+using FileForge.Application.Services;
+using FileForge.Domain.Models;
 using System.Diagnostics;
-using System.Drawing;
-using System.IO;
 using System.Runtime.InteropServices;
-using System.Windows.Forms;
 
 namespace FileForge.WinForms;
 
 public partial class frmMain : Form
 {
+    private const int OuterMargin = 18;
+    private const int PanelGap = 12;
+    private const int HeaderHeight = 120;
+    private const int SourceTargetHeight = 190;
+    private const int DetailsHeight = 128;
+    private const int StatusHeight = 42;
+
+    private readonly FolderScanService _folderScanService = new();
+
+    private readonly List<SourceFileRecord> _scannedFiles = new();
+
     private Panel pnlHeader = null!;
     private Label lblTitle = null!;
     private Label lblTagline = null!;
-    private Panel pnlWorkspace = null!;
-
-    private Panel pnlSource = null!;
-    private Panel pnlTarget = null!;
-    private Panel pnlResults = null!;
-    private Label lblResultsTitle = null!;
-    private DataGridView dgvResults = null!;
-
-    private Panel pnlDetails = null!;
-    private Label lblDetailsTitle = null!;
-    private TextBox txtDetails = null!;
-
-    private Panel pnlStatus = null!;
-    private Label lblStatusTitle = null!;
-    private Label lblStatusMessage = null!;
-
-    private Label lblSourceTitle = null!;
-    private Button btnAddSource = null!;
-    private Button btnRemoveSource = null!;
-    private Button btnClearSources = null!;
-    private ListBox lstSourceFolders = null!;
-    private Label lblSourceTip = null!;
-
-    private Label lblTargetTitle = null!;
-    private Label lblTargetFolder = null!;
-    private TextBox txtTargetFolder = null!;
-    private Button btnBrowseTarget = null!;
-    private Button btnSelectTarget = null!;
-    private Button btnOpenTarget = null!;
-    private CheckBox chkPreserveEmptyDirectories = null!;
-    private Label lblTargetMode = null!;
 
     private readonly Label lblSources = new();
     private readonly Label lblFiles = new();
@@ -57,6 +35,46 @@ public partial class frmMain : Form
     private Button btnReport = null!;
     private Button btnOptions = null!;
 
+    private Panel pnlSource = null!;
+    private Label lblSourceTitle = null!;
+    private Button btnAddSource = null!;
+    private Button btnRemoveSource = null!;
+    private Button btnClearSources = null!;
+    private ListBox lstSourceFolders = null!;
+    private Label lblSourceTip = null!;
+
+    private Panel pnlTarget = null!;
+    private Label lblTargetTitle = null!;
+    private Label lblTargetFolder = null!;
+    private TextBox txtTargetFolder = null!;
+    private Button btnBrowseTarget = null!;
+    private Button btnSelectTarget = null!;
+    private Button btnOpenTarget = null!;
+    private CheckBox chkPreserveEmptyDirectories = null!;
+    private Label lblTargetMode = null!;
+
+    private Panel pnlResults = null!;
+    private Label lblResultsTitle = null!;
+    private DataGridView dgvResults = null!;
+
+    private Panel pnlDetails = null!;
+    private Label lblDetailsTitle = null!;
+    private TextBox txtDetails = null!;
+
+    private Panel pnlStatus = null!;
+    private Label lblStatusTitle = null!;
+    private Label lblStatusMessage = null!;
+
+    private readonly Color _background = Color.FromArgb(245, 247, 250);
+    private readonly Color _panel = Color.White;
+    private readonly Color _blue = Color.FromArgb(28, 87, 164);
+    private readonly Color _darkBlue = Color.FromArgb(11, 47, 92);
+    private readonly Color _green = Color.FromArgb(18, 128, 78);
+    private readonly Color _purple = Color.FromArgb(96, 69, 170);
+    private readonly Color _teal = Color.FromArgb(0, 125, 140);
+    private readonly Color _darkButton = Color.FromArgb(68, 78, 92);
+    private readonly Color _muted = Color.FromArgb(75, 88, 108);
+
     public frmMain()
     {
         InitializeComponent();
@@ -69,24 +87,33 @@ public partial class frmMain : Form
 
         Text = "FileForge - Professional File Consolidation";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(1100, 650);
+        MinimumSize = new Size(1100, 700);
         ClientSize = new Size(1280, 720);
         AutoScaleMode = AutoScaleMode.None;
         Font = new Font("Segoe UI", 9F, FontStyle.Regular);
-        BackColor = Color.FromArgb(245, 247, 250);
+        BackColor = _background;
 
         Controls.Clear();
 
         BuildHeader();
-        BuildWorkspace();
+        BuildSourcePanel();
+        BuildTargetPanel();
+        BuildResultsPanel();
+        BuildDetailsPanel();
+        BuildStatusPanel();
 
         Controls.Add(pnlHeader);
-        Controls.Add(pnlWorkspace);
+        Controls.Add(pnlSource);
+        Controls.Add(pnlTarget);
+        Controls.Add(pnlResults);
+        Controls.Add(pnlDetails);
+        Controls.Add(pnlStatus);
 
-        SetStatValues(0, 0, 0, 0, 0);
-        LayoutForm();
-
+        ConfigureGridColumns();
         WireEvents();
+        SetStatValues(0, 0, 0, 0, 0);
+        SetStatus("Ready", "No operation in progress.");
+        LayoutForm();
 
         Resize += (_, _) => LayoutForm();
         Shown += (_, _) => LayoutForm();
@@ -98,8 +125,8 @@ public partial class frmMain : Form
     {
         pnlHeader = new Panel
         {
-            BackColor = Color.FromArgb(245, 247, 250),
-            Padding = Padding.Empty
+            BackColor = _background,
+            BorderStyle = BorderStyle.None
         };
 
         lblTitle = new Label
@@ -108,7 +135,7 @@ public partial class frmMain : Form
             AutoSize = false,
             TextAlign = ContentAlignment.MiddleLeft,
             Font = new Font("Segoe UI", 24F, FontStyle.Bold),
-            ForeColor = Color.FromArgb(13, 48, 92),
+            ForeColor = _darkBlue,
             BackColor = Color.Transparent
         };
 
@@ -118,26 +145,24 @@ public partial class frmMain : Form
             AutoSize = false,
             TextAlign = ContentAlignment.MiddleLeft,
             Font = new Font("Segoe UI", 10.5F, FontStyle.Regular),
-            ForeColor = Color.FromArgb(55, 70, 92),
+            ForeColor = _muted,
             BackColor = Color.Transparent
         };
 
+        btnScan = CreateButton("Scan", _blue);
+        btnAnalyze = CreateButton("Analyze", _green);
+        btnCopy = CreateButton("Copy", _purple);
+        btnVerify = CreateButton("Verify", _teal);
+        btnReport = CreateButton("Report", _blue);
+        btnOptions = CreateButton("Options", _darkButton);
+
         pnlHeader.Controls.Add(lblTitle);
         pnlHeader.Controls.Add(lblTagline);
-
         pnlHeader.Controls.Add(CreateStatCard("Sources", lblSources));
         pnlHeader.Controls.Add(CreateStatCard("Files", lblFiles));
         pnlHeader.Controls.Add(CreateStatCard("Unique", lblUnique));
         pnlHeader.Controls.Add(CreateStatCard("Duplicates", lblDuplicates));
         pnlHeader.Controls.Add(CreateStatCard("Conflicts", lblConflicts));
-
-        btnScan = CreatePrimaryButton("Scan");
-        btnAnalyze = CreateGreenButton("Analyze");
-        btnCopy = CreatePurpleButton("Copy");
-        btnVerify = CreateTealButton("Verify");
-        btnReport = CreatePrimaryButton("Report");
-        btnOptions = CreateDarkButton("Options");
-
         pnlHeader.Controls.Add(btnScan);
         pnlHeader.Controls.Add(btnAnalyze);
         pnlHeader.Controls.Add(btnCopy);
@@ -146,47 +171,50 @@ public partial class frmMain : Form
         pnlHeader.Controls.Add(btnOptions);
     }
 
-    private void BuildWorkspace()
+    private Panel CreateStatCard(string caption, Label valueLabel)
     {
-        pnlWorkspace = new Panel
+        Panel card = new()
         {
-            BackColor = Color.White,
-            BorderStyle = BorderStyle.FixedSingle,
-            Padding = Padding.Empty
+            BackColor = _panel,
+            BorderStyle = BorderStyle.FixedSingle
         };
 
-        BuildSourcePanel();
-        BuildTargetPanel();
-        BuildResultsPanel();
-        BuildDetailsPanel();
-        BuildStatusPanel();
+        Label captionLabel = new()
+        {
+            Text = caption,
+            AutoSize = false,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Font = new Font("Segoe UI", 8.5F, FontStyle.Regular),
+            ForeColor = _muted,
+            BackColor = _panel
+        };
 
-        pnlWorkspace.Controls.Add(pnlSource);
-        pnlWorkspace.Controls.Add(pnlTarget);
-        pnlWorkspace.Controls.Add(pnlResults);
-        pnlWorkspace.Controls.Add(pnlDetails);
-        pnlWorkspace.Controls.Add(pnlStatus);
+        valueLabel.Text = "0";
+        valueLabel.AutoSize = false;
+        valueLabel.TextAlign = ContentAlignment.MiddleRight;
+        valueLabel.Font = new Font("Segoe UI", 15F, FontStyle.Bold);
+        valueLabel.ForeColor = _darkBlue;
+        valueLabel.BackColor = _panel;
+
+        card.Controls.Add(captionLabel);
+        card.Controls.Add(valueLabel);
+        card.Tag = captionLabel;
+        return card;
     }
 
     private void BuildSourcePanel()
     {
-        pnlSource = new Panel
-        {
-            BackColor = Color.White,
-            BorderStyle = BorderStyle.FixedSingle
-        };
-
+        pnlSource = CreatePanel();
         lblSourceTitle = CreateSectionTitle("SOURCE ROOT FOLDERS");
-
-        btnAddSource = CreatePrimaryButton("+ Add Source Root");
-        btnRemoveSource = CreateDarkButton("Remove Selected");
-        btnClearSources = CreateDarkButton("Clear All");
+        btnAddSource = CreateButton("+ Add Source Root", _blue);
+        btnRemoveSource = CreateButton("Remove Selected", _darkButton);
+        btnClearSources = CreateButton("Clear All", _darkButton);
 
         lstSourceFolders = new ListBox
         {
+            BorderStyle = BorderStyle.FixedSingle,
             Font = new Font("Segoe UI", 9F, FontStyle.Regular),
             SelectionMode = SelectionMode.MultiExtended,
-            BorderStyle = BorderStyle.FixedSingle,
             HorizontalScrollbar = true,
             ScrollAlwaysVisible = true,
             IntegralHeight = false
@@ -194,12 +222,12 @@ public partial class frmMain : Form
 
         lblSourceTip = new Label
         {
-            Text = "Tip: add source roots one by one. Use Ctrl/Shift in this list to remove multiple entries.",
+            Text = "Tip: use Ctrl/Shift in the picker to add multiple folders. Use Ctrl/Shift here to remove multiple entries.",
             AutoSize = false,
             TextAlign = ContentAlignment.MiddleLeft,
             Font = new Font("Segoe UI", 8.5F, FontStyle.Regular),
-            ForeColor = Color.FromArgb(70, 82, 105),
-            BackColor = Color.White
+            ForeColor = _muted,
+            BackColor = _panel
         };
 
         pnlSource.Controls.Add(lblSourceTitle);
@@ -212,12 +240,7 @@ public partial class frmMain : Form
 
     private void BuildTargetPanel()
     {
-        pnlTarget = new Panel
-        {
-            BackColor = Color.White,
-            BorderStyle = BorderStyle.FixedSingle
-        };
-
+        pnlTarget = CreatePanel();
         lblTargetTitle = CreateSectionTitle("TARGET MASTER FOLDER");
 
         lblTargetFolder = new Label
@@ -226,8 +249,8 @@ public partial class frmMain : Form
             AutoSize = false,
             TextAlign = ContentAlignment.MiddleLeft,
             Font = new Font("Segoe UI", 9F, FontStyle.Bold),
-            ForeColor = Color.FromArgb(25, 35, 50),
-            BackColor = Color.White
+            ForeColor = Color.FromArgb(35, 45, 60),
+            BackColor = _panel
         };
 
         txtTargetFolder = new TextBox
@@ -237,17 +260,17 @@ public partial class frmMain : Form
             Font = new Font("Segoe UI", 9F, FontStyle.Regular)
         };
 
-        btnBrowseTarget = CreateDarkButton("...");
-        btnSelectTarget = CreateGreenButton("Select Target Folder");
-        btnOpenTarget = CreateDarkButton("Open Target Folder");
+        btnBrowseTarget = CreateButton("...", _darkButton);
+        btnSelectTarget = CreateButton("Select Target Folder", _green);
+        btnOpenTarget = CreateButton("Open Target Folder", _darkButton);
 
         chkPreserveEmptyDirectories = new CheckBox
         {
             Text = "Preserve Empty Directories",
             AutoSize = false,
             Font = new Font("Segoe UI", 9F, FontStyle.Bold),
-            ForeColor = Color.FromArgb(25, 35, 50),
-            BackColor = Color.White
+            ForeColor = Color.FromArgb(35, 45, 60),
+            BackColor = _panel
         };
 
         lblTargetMode = new Label
@@ -256,8 +279,8 @@ public partial class frmMain : Form
             AutoSize = false,
             TextAlign = ContentAlignment.MiddleLeft,
             Font = new Font("Segoe UI", 8.5F, FontStyle.Regular),
-            ForeColor = Color.FromArgb(70, 82, 105),
-            BackColor = Color.White
+            ForeColor = _muted,
+            BackColor = _panel
         };
 
         pnlTarget.Controls.Add(lblTargetTitle);
@@ -272,94 +295,33 @@ public partial class frmMain : Form
 
     private void BuildResultsPanel()
     {
-        pnlResults = new Panel
-        {
-            BackColor = Color.White,
-            BorderStyle = BorderStyle.FixedSingle
-        };
-
+        pnlResults = CreatePanel();
         lblResultsTitle = CreateSectionTitle("PREVIEW / RESULTS");
 
         dgvResults = new DataGridView
         {
             AllowUserToAddRows = false,
             AllowUserToDeleteRows = false,
-            AllowUserToResizeRows = false,
-            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None,
-            BackgroundColor = Color.White,
-            BorderStyle = BorderStyle.None,
-            CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal,
-            ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.Single,
-            ColumnHeadersHeight = 30,
-            ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
-            EnableHeadersVisualStyles = false,
-            MultiSelect = false,
             ReadOnly = true,
             RowHeadersVisible = false,
-            RowTemplate = { Height = 26 },
-            ScrollBars = ScrollBars.Both,
+            MultiSelect = false,
             SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-            Font = new Font("Segoe UI", 9F, FontStyle.Regular)
+            BackgroundColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle,
+            AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.None,
+            RowTemplate = { Height = 24 },
+            EnableHeadersVisualStyles = false,
+            ColumnHeadersHeight = 32,
+            ScrollBars = ScrollBars.Both
         };
 
-        dgvResults.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(235, 241, 248);
-        dgvResults.ColumnHeadersDefaultCellStyle.ForeColor = Color.FromArgb(15, 45, 85);
+        dgvResults.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(235, 242, 252);
+        dgvResults.ColumnHeadersDefaultCellStyle.ForeColor = _darkBlue;
         dgvResults.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
-        dgvResults.DefaultCellStyle.BackColor = Color.White;
-        dgvResults.DefaultCellStyle.ForeColor = Color.FromArgb(25, 35, 50);
-        dgvResults.DefaultCellStyle.SelectionBackColor = Color.FromArgb(43, 96, 177);
+        dgvResults.DefaultCellStyle.Font = new Font("Segoe UI", 9F, FontStyle.Regular);
+        dgvResults.DefaultCellStyle.SelectionBackColor = _blue;
         dgvResults.DefaultCellStyle.SelectionForeColor = Color.White;
-
-        dgvResults.Columns.Add(new DataGridViewTextBoxColumn
-        {
-            Name = "RelativePath",
-            HeaderText = "Relative Path",
-            AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
-            FillWeight = 34,
-            MinimumWidth = 320
-        });
-
-        dgvResults.Columns.Add(new DataGridViewTextBoxColumn
-        {
-            Name = "Status",
-            HeaderText = "Status",
-            AutoSizeMode = DataGridViewAutoSizeColumnMode.None,
-            Width = 150
-        });
-
-        dgvResults.Columns.Add(new DataGridViewTextBoxColumn
-        {
-            Name = "SelectedFrom",
-            HeaderText = "Selected From",
-            AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
-            FillWeight = 30,
-            MinimumWidth = 280
-        });
-
-        dgvResults.Columns.Add(new DataGridViewTextBoxColumn
-        {
-            Name = "Size",
-            HeaderText = "Size",
-            AutoSizeMode = DataGridViewAutoSizeColumnMode.None,
-            Width = 90
-        });
-
-        dgvResults.Columns.Add(new DataGridViewTextBoxColumn
-        {
-            Name = "LastModified",
-            HeaderText = "Last Modified",
-            AutoSizeMode = DataGridViewAutoSizeColumnMode.None,
-            Width = 145
-        });
-
-        dgvResults.Columns.Add(new DataGridViewTextBoxColumn
-        {
-            Name = "Hash",
-            HeaderText = "Hash",
-            AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
-            FillWeight = 22,
-            MinimumWidth = 180
-        });
+        dgvResults.SelectionChanged += DgvResults_SelectionChanged;
 
         pnlResults.Controls.Add(lblResultsTitle);
         pnlResults.Controls.Add(dgvResults);
@@ -367,25 +329,18 @@ public partial class frmMain : Form
 
     private void BuildDetailsPanel()
     {
-        pnlDetails = new Panel
-        {
-            BackColor = Color.White,
-            BorderStyle = BorderStyle.FixedSingle
-        };
-
+        pnlDetails = CreatePanel();
         lblDetailsTitle = CreateSectionTitle("DETAILS");
 
         txtDetails = new TextBox
         {
             Multiline = true,
             ReadOnly = true,
-            BorderStyle = BorderStyle.None,
             ScrollBars = ScrollBars.Both,
             WordWrap = false,
-            BackColor = Color.White,
-            ForeColor = Color.FromArgb(25, 35, 50),
+            BorderStyle = BorderStyle.FixedSingle,
             Font = new Font("Consolas", 9F, FontStyle.Regular),
-            Text = "Decision and verification details will appear here after functionality is reconnected."
+            BackColor = Color.White
         };
 
         pnlDetails.Controls.Add(lblDetailsTitle);
@@ -396,7 +351,7 @@ public partial class frmMain : Form
     {
         pnlStatus = new Panel
         {
-            BackColor = Color.White,
+            BackColor = _panel,
             BorderStyle = BorderStyle.FixedSingle
         };
 
@@ -406,8 +361,8 @@ public partial class frmMain : Form
             AutoSize = false,
             TextAlign = ContentAlignment.MiddleLeft,
             Font = new Font("Segoe UI", 9F, FontStyle.Bold),
-            ForeColor = Color.FromArgb(0, 110, 55),
-            BackColor = Color.White
+            ForeColor = _green,
+            BackColor = _panel
         };
 
         lblStatusMessage = new Label
@@ -416,51 +371,24 @@ public partial class frmMain : Form
             AutoSize = false,
             TextAlign = ContentAlignment.MiddleLeft,
             Font = new Font("Segoe UI", 9F, FontStyle.Regular),
-            ForeColor = Color.FromArgb(55, 70, 92),
-            BackColor = Color.White
+            ForeColor = Color.FromArgb(45, 58, 76),
+            BackColor = _panel
         };
 
         pnlStatus.Controls.Add(lblStatusTitle);
         pnlStatus.Controls.Add(lblStatusMessage);
     }
 
-    private Panel CreateStatCard(string caption, Label valueLabel)
+    private Panel CreatePanel()
     {
-        var card = new Panel
+        return new Panel
         {
-            Width = 150,
-            Height = 44,
-            BackColor = Color.White,
-            BorderStyle = BorderStyle.FixedSingle,
-            Tag = caption
+            BackColor = _panel,
+            BorderStyle = BorderStyle.FixedSingle
         };
-
-        var captionLabel = new Label
-        {
-            Text = caption,
-            AutoSize = false,
-            Bounds = new Rectangle(12, 0, 88, 42),
-            TextAlign = ContentAlignment.MiddleLeft,
-            Font = new Font("Segoe UI", 8.5F, FontStyle.Regular),
-            ForeColor = Color.FromArgb(70, 82, 105),
-            BackColor = Color.White
-        };
-
-        valueLabel.Text = "0";
-        valueLabel.AutoSize = false;
-        valueLabel.Bounds = new Rectangle(94, 0, 44, 42);
-        valueLabel.TextAlign = ContentAlignment.MiddleRight;
-        valueLabel.Font = new Font("Segoe UI", 15F, FontStyle.Bold);
-        valueLabel.ForeColor = Color.FromArgb(13, 48, 92);
-        valueLabel.BackColor = Color.White;
-
-        card.Controls.Add(captionLabel);
-        card.Controls.Add(valueLabel);
-
-        return card;
     }
 
-    private static Label CreateSectionTitle(string text)
+    private Label CreateSectionTitle(string text)
     {
         return new Label
         {
@@ -468,550 +396,377 @@ public partial class frmMain : Form
             AutoSize = false,
             TextAlign = ContentAlignment.MiddleLeft,
             Font = new Font("Segoe UI", 9F, FontStyle.Bold),
-            ForeColor = Color.FromArgb(0, 75, 160),
-            BackColor = Color.White
+            ForeColor = _blue,
+            BackColor = _panel
         };
     }
 
-    private static Button CreatePrimaryButton(string text)
+    private Button CreateButton(string text, Color backColor)
     {
-        return CreateButton(text, Color.FromArgb(43, 96, 177));
-    }
-
-    private static Button CreateGreenButton(string text)
-    {
-        return CreateButton(text, Color.FromArgb(0, 132, 76));
-    }
-
-    private static Button CreatePurpleButton(string text)
-    {
-        return CreateButton(text, Color.FromArgb(104, 72, 160));
-    }
-
-    private static Button CreateTealButton(string text)
-    {
-        return CreateButton(text, Color.FromArgb(30, 139, 156));
-    }
-
-    private static Button CreateDarkButton(string text)
-    {
-        return CreateButton(text, Color.FromArgb(65, 77, 94));
-    }
-
-    private static Button CreateButton(string text, Color backColor)
-    {
-        return new Button
+        Button button = new()
         {
             Text = text,
-            FlatStyle = FlatStyle.Flat,
+            AutoSize = false,
+            Height = 30,
             BackColor = backColor,
             ForeColor = Color.White,
-            Font = new Font("Segoe UI", 9F, FontStyle.Bold),
-            TextAlign = ContentAlignment.MiddleCenter,
-            Cursor = Cursors.Hand,
-            UseVisualStyleBackColor = false
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI", 8.8F, FontStyle.Bold),
+            UseVisualStyleBackColor = false,
+            TextAlign = ContentAlignment.MiddleCenter
         };
+
+        button.FlatAppearance.BorderSize = 0;
+        return button;
     }
 
-    private void LayoutForm()
+    private void ConfigureGridColumns()
     {
-        if (pnlHeader == null || pnlWorkspace == null)
-            return;
+        dgvResults.Columns.Clear();
+        dgvResults.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
 
-        const int headerHeight = 150;
-
-        pnlHeader.SetBounds(0, 0, ClientSize.Width, headerHeight);
-        pnlWorkspace.SetBounds(0, headerHeight, ClientSize.Width, Math.Max(100, ClientSize.Height - headerHeight));
-
-        LayoutHeaderControls();
-        LayoutWorkspaceControls();
-    }
-
-    private void LayoutHeaderControls()
-    {
-        if (pnlHeader == null || lblTitle == null || lblTagline == null)
-            return;
-
-        const int left = 30;
-        const int top = 26;
-        const int brandWidth = 360;
-
-        lblTitle.SetBounds(left, top, brandWidth, 44);
-        lblTagline.SetBounds(left, top + 48, brandWidth, 28);
-
-        int cardWidth = 150;
-        int cardHeight = 44;
-        int gap = 10;
-        int cardCount = 5;
-        int totalCardsWidth = (cardWidth * cardCount) + (gap * (cardCount - 1));
-        int startX = Math.Max(left + brandWidth + 40, pnlHeader.ClientSize.Width - totalCardsWidth - 30);
-        int cardTop = 42;
-
-        int index = 0;
-        foreach (Control control in pnlHeader.Controls)
+        dgvResults.Columns.Add(new DataGridViewTextBoxColumn
         {
-            if (control is Panel panel && panel.Tag is string)
-            {
-                panel.SetBounds(startX + (index * (cardWidth + gap)), cardTop, cardWidth, cardHeight);
-                index++;
-            }
-        }
+            Name = "RelativePath",
+            HeaderText = "Relative Path",
+            FillWeight = 240,
+            MinimumWidth = 220
+        });
 
-        int buttonWidth = 120;
-        int buttonHeight = 34;
-        int buttonGap = 10;
-        int buttonCount = 6;
-        int totalButtonsWidth = (buttonWidth * buttonCount) + (buttonGap * (buttonCount - 1));
-        int buttonStartX = Math.Max(left + brandWidth + 40, pnlHeader.ClientSize.Width - totalButtonsWidth - 30);
-        int buttonTop = 104;
+        dgvResults.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            Name = "Status",
+            HeaderText = "Status",
+            FillWeight = 95,
+            MinimumWidth = 110
+        });
 
-        btnScan.SetBounds(buttonStartX, buttonTop, buttonWidth, buttonHeight);
-        btnAnalyze.SetBounds(buttonStartX + ((buttonWidth + buttonGap) * 1), buttonTop, buttonWidth, buttonHeight);
-        btnCopy.SetBounds(buttonStartX + ((buttonWidth + buttonGap) * 2), buttonTop, buttonWidth, buttonHeight);
-        btnVerify.SetBounds(buttonStartX + ((buttonWidth + buttonGap) * 3), buttonTop, buttonWidth, buttonHeight);
-        btnReport.SetBounds(buttonStartX + ((buttonWidth + buttonGap) * 4), buttonTop, buttonWidth, buttonHeight);
-        btnOptions.SetBounds(buttonStartX + ((buttonWidth + buttonGap) * 5), buttonTop, buttonWidth, buttonHeight);
+        dgvResults.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            Name = "SourceRoot",
+            HeaderText = "Source Root",
+            FillWeight = 180,
+            MinimumWidth = 180
+        });
+
+        dgvResults.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            Name = "FullPath",
+            HeaderText = "Full Path",
+            FillWeight = 260,
+            MinimumWidth = 260
+        });
+
+        dgvResults.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            Name = "Size",
+            HeaderText = "Size",
+            FillWeight = 70,
+            MinimumWidth = 80,
+            DefaultCellStyle = { Alignment = DataGridViewContentAlignment.MiddleRight }
+        });
+
+        dgvResults.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            Name = "LastModified",
+            HeaderText = "Last Modified",
+            FillWeight = 115,
+            MinimumWidth = 145
+        });
     }
-
-    private void LayoutWorkspaceControls()
-    {
-        if (pnlWorkspace == null || pnlSource == null || pnlTarget == null || pnlResults == null || pnlDetails == null || pnlStatus == null)
-            return;
-
-        const int margin = 28;
-        const int gap = 18;
-        const int panelHeight = 205;
-
-        int availableWidth = Math.Max(800, pnlWorkspace.ClientSize.Width - (margin * 2) - gap);
-        int panelWidth = availableWidth / 2;
-        int top = 24;
-
-        pnlSource.SetBounds(margin, top, panelWidth, panelHeight);
-        pnlTarget.SetBounds(margin + panelWidth + gap, top, panelWidth, panelHeight);
-
-        LayoutSourcePanel();
-        LayoutTargetPanel();
-
-        int resultsTop = top + panelHeight + 22;
-        int detailsHeight = 115;
-        int statusHeight = 48;
-        int detailsGap = 14;
-        int statusGap = 10;
-        int availableHeight = pnlWorkspace.ClientSize.Height - resultsTop - detailsGap - detailsHeight - statusGap - statusHeight - margin;
-        int resultsHeight = Math.Max(120, availableHeight);
-
-        pnlResults.SetBounds(margin, resultsTop, pnlWorkspace.ClientSize.Width - (margin * 2), resultsHeight);
-        LayoutResultsPanel();
-
-        int detailsTop = pnlResults.Bottom + detailsGap;
-        pnlDetails.SetBounds(margin, detailsTop, pnlWorkspace.ClientSize.Width - (margin * 2), detailsHeight);
-        LayoutDetailsPanel();
-
-        int statusTop = pnlDetails.Bottom + statusGap;
-        pnlStatus.SetBounds(margin, statusTop, pnlWorkspace.ClientSize.Width - (margin * 2), statusHeight);
-        LayoutStatusPanel();
-    }
-
-    private void LayoutSourcePanel()
-    {
-        int w = pnlSource.ClientSize.Width;
-
-        lblSourceTitle.SetBounds(16, 10, w - 32, 22);
-        btnAddSource.SetBounds(16, 42, 160, 34);
-        btnRemoveSource.SetBounds(186, 42, 150, 34);
-        btnClearSources.SetBounds(346, 42, 130, 34);
-        lstSourceFolders.SetBounds(16, 86, w - 32, 96);
-        lblSourceTip.SetBounds(16, 186, w - 32, 22);
-    }
-
-    private void LayoutTargetPanel()
-    {
-        int w = pnlTarget.ClientSize.Width;
-
-        lblTargetTitle.SetBounds(16, 10, w - 32, 22);
-        lblTargetFolder.SetBounds(24, 45, 110, 24);
-        txtTargetFolder.SetBounds(138, 45, Math.Max(120, w - 220), 24);
-        btnBrowseTarget.SetBounds(w - 70, 42, 46, 31);
-
-        btnSelectTarget.SetBounds(138, 84, 180, 34);
-        btnOpenTarget.SetBounds(328, 84, 165, 34);
-
-        chkPreserveEmptyDirectories.SetBounds(138, 126, 250, 22);
-        lblTargetMode.SetBounds(392, 126, Math.Max(100, w - 410), 22);
-    }
-
-    private void LayoutResultsPanel()
-    {
-        int w = pnlResults.ClientSize.Width;
-        int h = pnlResults.ClientSize.Height;
-
-        lblResultsTitle.SetBounds(16, 8, w - 32, 22);
-        dgvResults.SetBounds(1, 36, Math.Max(100, w - 2), Math.Max(100, h - 37));
-    }
-
-    private void LayoutDetailsPanel()
-    {
-        int w = pnlDetails.ClientSize.Width;
-        int h = pnlDetails.ClientSize.Height;
-
-        lblDetailsTitle.SetBounds(16, 8, w - 32, 22);
-        txtDetails.SetBounds(16, 36, Math.Max(100, w - 32), Math.Max(60, h - 44));
-    }
-
-    private void LayoutStatusPanel()
-    {
-        int w = pnlStatus.ClientSize.Width;
-        int h = pnlStatus.ClientSize.Height;
-
-        lblStatusTitle.SetBounds(16, 4, 180, 18);
-        lblStatusMessage.SetBounds(16, 24, Math.Max(100, w - 32), Math.Max(18, h - 28));
-    }
-
 
     private void WireEvents()
     {
         btnAddSource.Click += BtnAddSource_Click;
         btnRemoveSource.Click += BtnRemoveSource_Click;
         btnClearSources.Click += BtnClearSources_Click;
-
         btnBrowseTarget.Click += BtnSelectTarget_Click;
         btnSelectTarget.Click += BtnSelectTarget_Click;
         btnOpenTarget.Click += BtnOpenTarget_Click;
+        btnScan.Click += BtnScan_Click;
+
+        btnAnalyze.Click += (_, _) => SetStatus("Not connected", "Analyze will be reconnected after Scan is confirmed.");
+        btnCopy.Click += (_, _) => SetStatus("Not connected", "Copy will be reconnected after Analyze is confirmed.");
+        btnVerify.Click += (_, _) => SetStatus("Not connected", "Verify will be reconnected after Copy is confirmed.");
+        btnReport.Click += (_, _) => SetStatus("Not connected", "Report engine will be connected later.");
+        btnOptions.Click += (_, _) => SetStatus("Options", "Preserve Empty Directories is available in the Target panel.");
+    }
+
+    private void LayoutForm()
+    {
+        if (ClientSize.Width <= 0 || ClientSize.Height <= 0)
+            return;
+
+        int clientWidth = ClientSize.Width;
+        int clientHeight = ClientSize.Height;
+        int contentWidth = Math.Max(900, clientWidth - (OuterMargin * 2));
+
+        pnlHeader.SetBounds(OuterMargin, 8, contentWidth, HeaderHeight);
+
+        lblTitle.SetBounds(0, 4, 380, 45);
+        lblTagline.SetBounds(3, 50, 430, 24);
+
+        int statStartX = Math.Max(465, contentWidth - 690);
+        int statY = 18;
+        int statGap = 8;
+        int statWidth = Math.Max(118, (contentWidth - statStartX - (statGap * 4)) / 5);
+        int statHeight = 44;
+        LayoutStatCard(0, statStartX, statY, statWidth, statHeight);
+        LayoutStatCard(1, statStartX + ((statWidth + statGap) * 1), statY, statWidth, statHeight);
+        LayoutStatCard(2, statStartX + ((statWidth + statGap) * 2), statY, statWidth, statHeight);
+        LayoutStatCard(3, statStartX + ((statWidth + statGap) * 3), statY, statWidth, statHeight);
+        LayoutStatCard(4, statStartX + ((statWidth + statGap) * 4), statY, statWidth, statHeight);
+
+        int commandY = 80;
+        int commandX = 0;
+        SetButtonBounds(btnScan, ref commandX, commandY, 90);
+        SetButtonBounds(btnAnalyze, ref commandX, commandY, 105);
+        SetButtonBounds(btnCopy, ref commandX, commandY, 90);
+        SetButtonBounds(btnVerify, ref commandX, commandY, 90);
+        SetButtonBounds(btnReport, ref commandX, commandY, 90);
+        SetButtonBounds(btnOptions, ref commandX, commandY, 95);
+
+        int topY = pnlHeader.Bottom + 4;
+        int panelWidth = (contentWidth - PanelGap) / 2;
+        pnlSource.SetBounds(OuterMargin, topY, panelWidth, SourceTargetHeight);
+        pnlTarget.SetBounds(OuterMargin + panelWidth + PanelGap, topY, contentWidth - panelWidth - PanelGap, SourceTargetHeight);
+
+        LayoutSourcePanel();
+        LayoutTargetPanel();
+
+        int statusY = clientHeight - OuterMargin - StatusHeight;
+        pnlStatus.SetBounds(OuterMargin, statusY, contentWidth, StatusHeight);
+        lblStatusTitle.SetBounds(14, 8, 160, 24);
+        lblStatusMessage.SetBounds(178, 8, Math.Max(300, pnlStatus.Width - 195), 24);
+
+        int detailsY = statusY - PanelGap - DetailsHeight;
+        pnlDetails.SetBounds(OuterMargin, detailsY, contentWidth, DetailsHeight);
+        lblDetailsTitle.SetBounds(12, 8, 250, 24);
+        txtDetails.SetBounds(12, 36, Math.Max(200, pnlDetails.Width - 24), Math.Max(50, pnlDetails.Height - 48));
+
+        int resultsY = pnlSource.Bottom + PanelGap;
+        int resultsHeight = Math.Max(120, detailsY - PanelGap - resultsY);
+        pnlResults.SetBounds(OuterMargin, resultsY, contentWidth, resultsHeight);
+        lblResultsTitle.SetBounds(12, 8, 250, 24);
+        dgvResults.SetBounds(12, 36, Math.Max(200, pnlResults.Width - 24), Math.Max(80, pnlResults.Height - 48));
+    }
+
+    private void LayoutStatCard(int index, int x, int y, int width, int height)
+    {
+        if (index < 0 || index >= 5)
+            return;
+
+        Control card = pnlHeader.Controls.OfType<Panel>().ElementAt(index);
+        card.SetBounds(x, y, width, height);
+
+        Label? caption = card.Tag as Label;
+        Label value = index switch
+        {
+            0 => lblSources,
+            1 => lblFiles,
+            2 => lblUnique,
+            3 => lblDuplicates,
+            _ => lblConflicts
+        };
+
+        caption?.SetBounds(10, 9, Math.Max(30, width - 62), 24);
+        value.SetBounds(width - 52, 4, 42, height - 8);
+    }
+
+    private static void SetButtonBounds(Button button, ref int x, int y, int width)
+    {
+        button.SetBounds(x, y, width, 30);
+        x += width + 8;
+    }
+
+    private void LayoutSourcePanel()
+    {
+        int w = pnlSource.Width;
+        lblSourceTitle.SetBounds(12, 8, 250, 24);
+        btnAddSource.SetBounds(12, 38, 150, 30);
+        btnRemoveSource.SetBounds(170, 38, 145, 30);
+        btnClearSources.SetBounds(323, 38, 90, 30);
+        lstSourceFolders.SetBounds(12, 78, Math.Max(200, w - 24), 82);
+        lblSourceTip.SetBounds(12, 162, Math.Max(200, w - 24), 22);
+    }
+
+    private void LayoutTargetPanel()
+    {
+        int w = pnlTarget.Width;
+        lblTargetTitle.SetBounds(12, 8, 250, 24);
+        lblTargetFolder.SetBounds(12, 42, 100, 24);
+        txtTargetFolder.SetBounds(112, 40, Math.Max(160, w - 184), 26);
+        btnBrowseTarget.SetBounds(w - 62, 38, 50, 30);
+        btnSelectTarget.SetBounds(112, 78, 165, 30);
+        btnOpenTarget.SetBounds(285, 78, 150, 30);
+        chkPreserveEmptyDirectories.SetBounds(112, 120, 230, 24);
+        lblTargetMode.SetBounds(112, 148, Math.Max(200, w - 124), 24);
     }
 
     private void BtnAddSource_Click(object? sender, EventArgs e)
     {
-        IReadOnlyList<string> selectedFolders;
-
-        try
-        {
-            selectedFolders = NativeFolderPicker.SelectFolders(this, "Select source root folder(s)");
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this,
-                "The multi-folder picker could not be opened. FileForge will fall back to single-folder selection.\n\n" + ex.Message,
-                "FileForge",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-
-            selectedFolders = SelectSingleSourceFolderFallback();
-        }
+        List<string> selectedFolders = MultiFolderPicker.ShowDialog(
+            Handle,
+            "Select one or more source root folders. Use Ctrl or Shift to select multiple folders.");
 
         if (selectedFolders.Count == 0)
-        {
-            SetStatus("Ready", "Source folder selection cancelled.");
             return;
-        }
 
-        int beforeCount = lstSourceFolders.Items.Count;
+        int added = 0;
 
         foreach (string folder in selectedFolders)
-            AddSourceFolder(folder, showIndividualStatus: false);
+        {
+            if (!lstSourceFolders.Items.Contains(folder))
+            {
+                lstSourceFolders.Items.Add(folder);
+                added++;
+            }
+        }
 
-        int addedCount = lstSourceFolders.Items.Count - beforeCount;
-
-        if (addedCount == 0)
-            SetStatus("Ready", "No new source folders added. Selected folder(s) may already exist in the list.");
-        else
-            SetStatus("Ready", $"Added {addedCount:N0} source folder(s). Use Ctrl/Shift in the list to select multiple entries for removal.");
+        SetStatValues(lstSourceFolders.Items.Count, _scannedFiles.Count, 0, 0, 0);
+        SetStatus("Source folders updated", $"Selected: {lstSourceFolders.Items.Count:N0}. Added: {added:N0}.");
     }
 
     private void BtnRemoveSource_Click(object? sender, EventArgs e)
     {
-        if (lstSourceFolders.SelectedIndices.Count == 0)
+        if (lstSourceFolders.SelectedItems.Count == 0)
         {
-            SetStatus("Ready", "Select one or more source folders to remove.");
+            SetStatus("No source selected", "Select one or more source folders to remove.");
             return;
         }
 
-        int removedCount = lstSourceFolders.SelectedIndices.Count;
+        while (lstSourceFolders.SelectedItems.Count > 0)
+            lstSourceFolders.Items.Remove(lstSourceFolders.SelectedItems[0]);
 
-        for (int i = lstSourceFolders.SelectedIndices.Count - 1; i >= 0; i--)
-        {
-            int index = lstSourceFolders.SelectedIndices[i];
-            lstSourceFolders.Items.RemoveAt(index);
-        }
-
-        UpdateSourceCount();
-        SetStatus("Ready", $"Removed {removedCount:N0} source folder(s).");
+        ClearScanResultsOnly();
+        SetStatValues(lstSourceFolders.Items.Count, 0, 0, 0, 0);
+        SetStatus("Source folders updated", $"Selected: {lstSourceFolders.Items.Count:N0}.");
     }
 
     private void BtnClearSources_Click(object? sender, EventArgs e)
     {
-        if (lstSourceFolders.Items.Count == 0)
-        {
-            SetStatus("Ready", "Source folder list is already empty.");
-            return;
-        }
-
         lstSourceFolders.Items.Clear();
-        UpdateSourceCount();
-        SetStatus("Ready", "All source folders cleared.");
+        ClearScanResultsOnly();
+        SetStatValues(0, 0, 0, 0, 0);
+        SetStatus("Ready", "Source folders cleared.");
     }
 
     private void BtnSelectTarget_Click(object? sender, EventArgs e)
     {
-        using var dialog = new FolderBrowserDialog
+        using FolderBrowserDialog dialog = new()
         {
-            Description = "Select target master folder",
+            Description = "Select the target master folder.",
             UseDescriptionForTitle = true,
             ShowNewFolderButton = true
         };
 
-        if (!string.IsNullOrWhiteSpace(txtTargetFolder.Text) && Directory.Exists(txtTargetFolder.Text))
-            dialog.SelectedPath = txtTargetFolder.Text;
-
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 
-        txtTargetFolder.Text = NormalizeFolderPath(dialog.SelectedPath);
-        SetStatus("Ready", "Target master folder selected.");
+        txtTargetFolder.Text = dialog.SelectedPath;
+        SetStatus("Target selected", dialog.SelectedPath);
     }
 
     private void BtnOpenTarget_Click(object? sender, EventArgs e)
     {
-        string targetPath = txtTargetFolder.Text.Trim();
-
-        if (string.IsNullOrWhiteSpace(targetPath))
+        if (string.IsNullOrWhiteSpace(txtTargetFolder.Text) || !Directory.Exists(txtTargetFolder.Text))
         {
-            SetStatus("Ready", "No target folder selected.");
-            return;
-        }
-
-        if (!Directory.Exists(targetPath))
-        {
-            MessageBox.Show(this, "The selected target folder does not exist.", "FileForge", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            SetStatus("Ready", "Target folder does not exist.");
+            SetStatus("Target unavailable", "Select a valid target folder first.", true);
             return;
         }
 
         Process.Start(new ProcessStartInfo
         {
-            FileName = targetPath,
+            FileName = txtTargetFolder.Text,
             UseShellExecute = true
         });
-
-        SetStatus("Ready", "Target folder opened.");
     }
 
-    private void AddSourceFolder(string folderPath, bool showIndividualStatus = true)
+    private void BtnScan_Click(object? sender, EventArgs e)
     {
-        string normalizedPath = NormalizeFolderPath(folderPath);
-
-        if (!Directory.Exists(normalizedPath))
+        if (lstSourceFolders.Items.Count == 0)
         {
-            MessageBox.Show(this, "The selected source folder does not exist.", "FileForge", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            SetStatus("Ready", "Source folder does not exist.");
+            MessageBox.Show("Please add at least one source root folder.", "FileForge", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        foreach (object item in lstSourceFolders.Items)
+        try
         {
-            string existingPath = item.ToString() ?? string.Empty;
-            if (string.Equals(existingPath, normalizedPath, StringComparison.OrdinalIgnoreCase))
+            Cursor = Cursors.WaitCursor;
+            SetStatus("Scanning", "Scanning source folders. Please wait...");
+            System.Windows.Forms.Application.DoEvents();
+
+            ClearScanResultsOnly();
+
+            List<string> sourceFolders = lstSourceFolders.Items.Cast<string>().ToList();
+            List<SourceFileRecord> scanned = _folderScanService.ScanFolders(sourceFolders);
+
+            _scannedFiles.Clear();
+            _scannedFiles.AddRange(scanned);
+
+            dgvResults.Rows.Clear();
+            foreach (SourceFileRecord file in _scannedFiles)
             {
-                if (showIndividualStatus)
-                    SetStatus("Ready", "Source folder is already in the list.");
-                return;
+                dgvResults.Rows.Add(
+                    file.RelativePath,
+                    "Scanned",
+                    file.SourceRoot,
+                    file.FullPath,
+                    FormatBytes(file.SizeBytes),
+                    file.LastModifiedTime.ToString("yyyy-MM-dd HH:mm:ss"));
             }
+
+            SetStatValues(lstSourceFolders.Items.Count, _scannedFiles.Count, 0, 0, 0);
+            SetStatus("Scan complete", $"Files found: {_scannedFiles.Count:N0}.");
         }
-
-        lstSourceFolders.Items.Add(normalizedPath);
-        UpdateSourceCount();
-        if (showIndividualStatus)
-            SetStatus("Ready", "Source root folder added.");
-    }
-
-    private IReadOnlyList<string> SelectSingleSourceFolderFallback()
-    {
-        using var dialog = new FolderBrowserDialog
+        catch (Exception ex)
         {
-            Description = "Select a source root folder",
-            UseDescriptionForTitle = true,
-            ShowNewFolderButton = false
-        };
-
-        if (dialog.ShowDialog(this) != DialogResult.OK)
-            return Array.Empty<string>();
-
-        return new[] { dialog.SelectedPath };
-    }
-
-    private static class NativeFolderPicker
-    {
-        private const int S_OK = 0;
-        private const uint ERROR_CANCELLED = 0x800704C7;
-        private static readonly Guid FileOpenDialogClsid = new("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7");
-
-        public static IReadOnlyList<string> SelectFolders(IWin32Window owner, string title)
-        {
-            Type? dialogType = Type.GetTypeFromCLSID(FileOpenDialogClsid);
-            if (dialogType == null)
-                throw new InvalidOperationException("Windows File Open Dialog COM type is not available.");
-
-            object? dialogObject = Activator.CreateInstance(dialogType);
-            if (dialogObject == null)
-                throw new InvalidOperationException("Windows File Open Dialog could not be created.");
-
-            IFileOpenDialog? dialog = null;
-            IShellItemArray? results = null;
-
-            try
-            {
-                dialog = (IFileOpenDialog)dialogObject;
-
-                dialog.GetOptions(out FileOpenOptions options);
-                dialog.SetOptions(options
-                    | FileOpenOptions.PickFolders
-                    | FileOpenOptions.AllowMultiSelect
-                    | FileOpenOptions.ForceFileSystem
-                    | FileOpenOptions.PathMustExist);
-
-                dialog.SetTitle(title);
-                dialog.SetOkButtonLabel("Add Selected Folders");
-
-                int hr = dialog.Show(owner.Handle);
-
-                if ((uint)hr == ERROR_CANCELLED)
-                    return Array.Empty<string>();
-
-                if (hr != S_OK)
-                    Marshal.ThrowExceptionForHR(hr);
-
-                dialog.GetResults(out results);
-                results.GetCount(out uint count);
-
-                List<string> selectedPaths = new();
-
-                for (uint i = 0; i < count; i++)
-                {
-                    results.GetItemAt(i, out IShellItem item);
-                    IntPtr pathPointer = IntPtr.Zero;
-
-                    try
-                    {
-                        item.GetDisplayName(ShellItemDisplayName.FileSystemPath, out pathPointer);
-                        string? path = Marshal.PtrToStringUni(pathPointer);
-
-                        if (!string.IsNullOrWhiteSpace(path))
-                            selectedPaths.Add(path);
-                    }
-                    finally
-                    {
-                        if (pathPointer != IntPtr.Zero)
-                            Marshal.FreeCoTaskMem(pathPointer);
-
-                        if (Marshal.IsComObject(item))
-                            Marshal.FinalReleaseComObject(item);
-                    }
-                }
-
-                return selectedPaths;
-            }
-            finally
-            {
-                if (results != null && Marshal.IsComObject(results))
-                    Marshal.FinalReleaseComObject(results);
-
-                if (dialog != null && Marshal.IsComObject(dialog))
-                    Marshal.FinalReleaseComObject(dialog);
-                else if (Marshal.IsComObject(dialogObject))
-                    Marshal.FinalReleaseComObject(dialogObject);
-            }
+            SetStatus("Scan failed", ex.Message, true);
+            MessageBox.Show(ex.Message, "Scan Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
-
-        [Flags]
-        private enum FileOpenOptions : uint
+        finally
         {
-            PickFolders = 0x00000020,
-            ForceFileSystem = 0x00000040,
-            AllowMultiSelect = 0x00000200,
-            PathMustExist = 0x00000800
-        }
-
-        private enum ShellItemDisplayName : uint
-        {
-            FileSystemPath = 0x80058000
-        }
-
-        [ComImport]
-        [Guid("D57C7288-D4AD-4768-BE02-9D969532D960")]
-        [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        private interface IFileOpenDialog
-        {
-            [PreserveSig]
-            int Show(IntPtr parent);
-
-            void SetFileTypes(uint cFileTypes, IntPtr rgFilterSpec);
-            void SetFileTypeIndex(uint iFileType);
-            void GetFileTypeIndex(out uint piFileType);
-            void Advise(IntPtr pfde, out uint pdwCookie);
-            void Unadvise(uint dwCookie);
-            void SetOptions(FileOpenOptions fos);
-            void GetOptions(out FileOpenOptions pfos);
-            void SetDefaultFolder(IShellItem psi);
-            void SetFolder(IShellItem psi);
-            void GetFolder(out IShellItem ppsi);
-            void GetCurrentSelection(out IShellItem ppsi);
-            void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
-            void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string pszName);
-            void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
-            void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);
-            void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
-            void GetResult(out IShellItem ppsi);
-            void AddPlace(IShellItem psi, int fdap);
-            void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);
-            void Close(int hr);
-            void SetClientGuid(ref Guid guid);
-            void ClearClientData();
-            void SetFilter(IntPtr pFilter);
-            void GetResults(out IShellItemArray ppenum);
-            void GetSelectedItems(out IShellItemArray ppsai);
-        }
-
-        [ComImport]
-        [Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE")]
-        [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        private interface IShellItem
-        {
-            void BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppv);
-            void GetParent(out IShellItem ppsi);
-            void GetDisplayName(ShellItemDisplayName sigdnName, out IntPtr ppszName);
-            void GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
-            void Compare(IShellItem psi, uint hint, out int piOrder);
-        }
-
-        [ComImport]
-        [Guid("B63EA76D-1F85-456F-A19C-48159EFA858B")]
-        [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        private interface IShellItemArray
-        {
-            void BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppvOut);
-            void GetPropertyStore(int flags, ref Guid riid, out IntPtr ppv);
-            void GetPropertyDescriptionList(ref Guid keyType, ref Guid riid, out IntPtr ppv);
-            void GetAttributes(uint attribFlags, uint sfgaoMask, out uint psfgaoAttribs);
-            void GetCount(out uint pdwNumItems);
-            void GetItemAt(uint dwIndex, out IShellItem ppsi);
-            void EnumItems(out IntPtr ppenumShellItems);
+            Cursor = Cursors.Default;
         }
     }
 
-    private static string NormalizeFolderPath(string folderPath)
+    private void DgvResults_SelectionChanged(object? sender, EventArgs e)
     {
-        string fullPath = Path.GetFullPath(folderPath.Trim());
-        return fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (dgvResults.SelectedRows.Count == 0)
+            return;
+
+        string fullPath = dgvResults.SelectedRows[0].Cells["FullPath"].Value?.ToString() ?? string.Empty;
+        SourceFileRecord? file = _scannedFiles.FirstOrDefault(f =>
+            string.Equals(f.FullPath, fullPath, StringComparison.OrdinalIgnoreCase));
+
+        if (file == null)
+        {
+            txtDetails.Text = "Select a scanned file to view details.";
+            return;
+        }
+
+        txtDetails.Text = BuildScanDetails(file);
     }
 
-    private void UpdateSourceCount()
+    private string BuildScanDetails(SourceFileRecord file)
     {
-        lblSources.Text = lstSourceFolders.Items.Count.ToString("N0");
+        return
+            $"Relative Path : {file.RelativePath}{Environment.NewLine}" +
+            $"File Name     : {file.FileName}{Environment.NewLine}" +
+            $"Source Root   : {file.SourceRoot}{Environment.NewLine}" +
+            $"Full Path     : {file.FullPath}{Environment.NewLine}" +
+            $"Directory     : {file.DirectoryPath}{Environment.NewLine}" +
+            $"Size          : {FormatBytes(file.SizeBytes)} ({file.SizeBytes:N0} bytes){Environment.NewLine}" +
+            $"Created       : {file.CreatedTime:yyyy-MM-dd HH:mm:ss}{Environment.NewLine}" +
+            $"Modified      : {file.LastModifiedTime:yyyy-MM-dd HH:mm:ss}{Environment.NewLine}" +
+            $"Hash Status   : Not calculated during Scan";
     }
 
-    private void SetStatus(string title, string message)
+    private void ClearScanResultsOnly()
     {
-        lblStatusTitle.Text = title;
-        lblStatusMessage.Text = message;
+        _scannedFiles.Clear();
+        dgvResults.Rows.Clear();
+        txtDetails.Clear();
     }
 
     private void SetStatValues(int sources, int files, int unique, int duplicates, int conflicts)
@@ -1021,5 +776,183 @@ public partial class frmMain : Form
         lblUnique.Text = unique.ToString("N0");
         lblDuplicates.Text = duplicates.ToString("N0");
         lblConflicts.Text = conflicts.ToString("N0");
+    }
+
+    private void SetStatus(string title, string message, bool isError = false)
+    {
+        lblStatusTitle.Text = title;
+        lblStatusTitle.ForeColor = isError ? Color.FromArgb(175, 45, 45) : _green;
+        lblStatusMessage.Text = message;
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        string[] units = { "B", "KB", "MB", "GB", "TB" };
+        double size = bytes;
+        int unitIndex = 0;
+
+        while (size >= 1024 && unitIndex < units.Length - 1)
+        {
+            size /= 1024;
+            unitIndex++;
+        }
+
+        return $"{size:0.##} {units[unitIndex]}";
+    }
+}
+
+internal static class MultiFolderPicker
+{
+    public static List<string> ShowDialog(IntPtr ownerHandle, string title)
+    {
+        List<string> folders = new();
+        Type? dialogType = Type.GetTypeFromCLSID(new Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7"));
+
+        if (dialogType == null)
+            return folders;
+
+        object? dialogObject = Activator.CreateInstance(dialogType);
+        if (dialogObject == null)
+            return folders;
+
+        IFileOpenDialog dialog = (IFileOpenDialog)dialogObject;
+
+        try
+        {
+            dialog.GetOptions(out FOS options);
+            options |= FOS.FOS_PICKFOLDERS;
+            options |= FOS.FOS_ALLOWMULTISELECT;
+            options |= FOS.FOS_FORCEFILESYSTEM;
+            options |= FOS.FOS_PATHMUSTEXIST;
+
+            dialog.SetOptions(options);
+            dialog.SetTitle(title);
+            dialog.SetOkButtonLabel("Add Selected Folders");
+
+            int hr = dialog.Show(ownerHandle);
+
+            if (hr == unchecked((int)0x800704C7))
+                return folders;
+
+            if (hr != 0)
+                Marshal.ThrowExceptionForHR(hr);
+
+            dialog.GetResults(out IShellItemArray results);
+
+            try
+            {
+                results.GetCount(out uint count);
+
+                for (uint i = 0; i < count; i++)
+                {
+                    results.GetItemAt(i, out IShellItem item);
+
+                    try
+                    {
+                        item.GetDisplayName(SIGDN.SIGDN_FILESYSPATH, out IntPtr pathPointer);
+
+                        try
+                        {
+                            string? path = Marshal.PtrToStringUni(pathPointer);
+
+                            if (!string.IsNullOrWhiteSpace(path) && Directory.Exists(path))
+                                folders.Add(path);
+                        }
+                        finally
+                        {
+                            Marshal.FreeCoTaskMem(pathPointer);
+                        }
+                    }
+                    finally
+                    {
+                        Marshal.ReleaseComObject(item);
+                    }
+                }
+            }
+            finally
+            {
+                Marshal.ReleaseComObject(results);
+            }
+        }
+        finally
+        {
+            Marshal.ReleaseComObject(dialogObject);
+        }
+
+        return folders;
+    }
+
+    [ComImport]
+    [Guid("D57C7288-D4AD-4768-BE02-9D969532D960")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IFileOpenDialog
+    {
+        [PreserveSig]
+        int Show(IntPtr parent);
+        void SetFileTypes(uint cFileTypes, IntPtr rgFilterSpec);
+        void SetFileTypeIndex(uint iFileType);
+        void GetFileTypeIndex(out uint piFileType);
+        void Advise(IntPtr pfde, out uint pdwCookie);
+        void Unadvise(uint dwCookie);
+        void SetOptions(FOS fos);
+        void GetOptions(out FOS pfos);
+        void SetDefaultFolder(IShellItem psi);
+        void SetFolder(IShellItem psi);
+        void GetFolder(out IShellItem ppsi);
+        void GetCurrentSelection(out IShellItem ppsi);
+        void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+        void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string pszName);
+        void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
+        void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);
+        void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
+        void GetResult(out IShellItem ppsi);
+        void AddPlace(IShellItem psi, uint fdap);
+        void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);
+        void Close(int hr);
+        void SetClientGuid(ref Guid guid);
+        void ClearClientData();
+        void SetFilter(IntPtr pFilter);
+        void GetResults(out IShellItemArray ppenum);
+        void GetSelectedItems(out IShellItemArray ppsai);
+    }
+
+    [ComImport]
+    [Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IShellItem
+    {
+        void BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppv);
+        void GetParent(out IShellItem ppsi);
+        void GetDisplayName(SIGDN sigdnName, out IntPtr ppszName);
+        void GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
+        void Compare(IShellItem psi, uint hint, out int piOrder);
+    }
+
+    [ComImport]
+    [Guid("B63EA76D-1F85-456F-A19C-48159EFA858B")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IShellItemArray
+    {
+        void BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppvOut);
+        void GetPropertyStore(int flags, ref Guid riid, out IntPtr ppv);
+        void GetPropertyDescriptionList(IntPtr keyType, ref Guid riid, out IntPtr ppv);
+        void GetAttributes(uint attribFlags, uint sfgaoMask, out uint psfgaoAttribs);
+        void GetCount(out uint pdwNumItems);
+        void GetItemAt(uint dwIndex, out IShellItem ppsi);
+        void EnumItems(out IntPtr ppenumShellItems);
+    }
+
+    [Flags]
+    private enum FOS : uint
+    {
+        FOS_PICKFOLDERS = 0x00000020,
+        FOS_FORCEFILESYSTEM = 0x00000040,
+        FOS_ALLOWMULTISELECT = 0x00000200,
+        FOS_PATHMUSTEXIST = 0x00000800
+    }
+
+    private enum SIGDN : uint
+    {
+        SIGDN_FILESYSPATH = 0x80058000
     }
 }
