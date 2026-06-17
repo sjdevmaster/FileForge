@@ -2,6 +2,7 @@ using FileForge.Application.Services;
 using FileForge.Domain.Models;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace FileForge.WinForms;
 
@@ -15,8 +16,12 @@ public partial class frmMain : Form
     private const int StatusHeight = 42;
 
     private readonly FolderScanService _folderScanService = new();
+    private readonly FileHashService _fileHashService = new();
+    private readonly FileSelectionService _fileSelectionService = new();
 
     private readonly List<SourceFileRecord> _scannedFiles = new();
+    private readonly List<ConsolidationGroup> _groups = new();
+    private ResultsMode _resultsMode = ResultsMode.Scan;
 
     private Panel pnlHeader = null!;
     private Label lblTitle = null!;
@@ -485,7 +490,7 @@ public partial class frmMain : Form
         btnOpenTarget.Click += BtnOpenTarget_Click;
         btnScan.Click += BtnScan_Click;
 
-        btnAnalyze.Click += (_, _) => SetStatus("Not connected", "Analyze will be reconnected after Scan is confirmed.");
+        btnAnalyze.Click += BtnAnalyze_Click;
         btnCopy.Click += (_, _) => SetStatus("Not connected", "Copy will be reconnected after Analyze is confirmed.");
         btnVerify.Click += (_, _) => SetStatus("Not connected", "Verify will be reconnected after Copy is confirmed.");
         btnReport.Click += (_, _) => SetStatus("Not connected", "Report engine will be connected later.");
@@ -697,6 +702,7 @@ public partial class frmMain : Form
             System.Windows.Forms.Application.DoEvents();
 
             ClearScanResultsOnly();
+            _resultsMode = ResultsMode.Scan;
 
             List<string> sourceFolders = lstSourceFolders.Items.Cast<string>().ToList();
             List<SourceFileRecord> scanned = _folderScanService.ScanFolders(sourceFolders);
@@ -730,22 +736,92 @@ public partial class frmMain : Form
         }
     }
 
+    private void BtnAnalyze_Click(object? sender, EventArgs e)
+    {
+        if (_scannedFiles.Count == 0)
+        {
+            MessageBox.Show("Please run Scan before Analyze.", "FileForge", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            SetStatus("Analyze blocked", "Run Scan first.", true);
+            return;
+        }
+
+        try
+        {
+            Cursor = Cursors.WaitCursor;
+            SetStatus("Analyzing", "Checking relative paths and hashing only files that need comparison...");
+            System.Windows.Forms.Application.DoEvents();
+
+            int hashedCount = _fileHashService.CalculateRequiredHashes(_scannedFiles);
+            List<string> sourceOrder = lstSourceFolders.Items.Cast<string>().ToList();
+
+            _groups.Clear();
+            _groups.AddRange(_fileSelectionService.BuildGroups(_scannedFiles, sourceOrder));
+
+            _resultsMode = ResultsMode.Analysis;
+            dgvResults.Rows.Clear();
+
+            foreach (ConsolidationGroup group in _groups)
+            {
+                SourceFileRecord? selected = group.SelectedFile;
+
+                dgvResults.Rows.Add(
+                    group.RelativePath,
+                    FormatStatus(group.Status),
+                    selected?.SourceRoot ?? string.Empty,
+                    selected?.FullPath ?? "Manual review required",
+                    selected == null ? string.Empty : FormatBytes(selected.SizeBytes),
+                    selected == null ? string.Empty : selected.LastModifiedTime.ToString("yyyy-MM-dd HH:mm:ss"));
+
+                int rowIndex = dgvResults.Rows.Count - 1;
+                dgvResults.Rows[rowIndex].DefaultCellStyle.ForeColor = StatusColor(group.Status);
+            }
+
+            int uniqueCount = _groups.Count(g => g.Status == ConsolidationStatus.Unique);
+            int duplicateCount = _groups.Count(g => g.Status == ConsolidationStatus.DuplicateSameContent);
+            int conflictCount = _groups.Count(g => g.Status == ConsolidationStatus.ConflictDifferentContent || g.Status == ConsolidationStatus.Error);
+
+            SetStatValues(lstSourceFolders.Items.Count, _scannedFiles.Count, uniqueCount, duplicateCount, conflictCount);
+            SetStatus("Analyze complete", $"Groups: {_groups.Count:N0}. Unique: {uniqueCount:N0}. Duplicates: {duplicateCount:N0}. Conflicts/Errors: {conflictCount:N0}. Hashed: {hashedCount:N0}.");
+
+            if (dgvResults.Rows.Count > 0)
+                dgvResults.Rows[0].Selected = true;
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Analyze failed", ex.Message, true);
+            MessageBox.Show(ex.Message, "Analyze Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            Cursor = Cursors.Default;
+        }
+    }
+
     private void DgvResults_SelectionChanged(object? sender, EventArgs e)
     {
         if (dgvResults.SelectedRows.Count == 0)
             return;
 
+        if (_resultsMode == ResultsMode.Analysis)
+        {
+            string relativePath = dgvResults.SelectedRows[0].Cells["RelativePath"].Value?.ToString() ?? string.Empty;
+            ConsolidationGroup? group = _groups.FirstOrDefault(g =>
+                string.Equals(g.RelativePath, relativePath, StringComparison.OrdinalIgnoreCase));
+
+            txtDetails.Text = group == null
+                ? "Select an analyzed decision to view details."
+                : BuildAnalysisDetails(group);
+
+            return;
+        }
+
         string fullPath = dgvResults.SelectedRows[0].Cells["FullPath"].Value?.ToString() ?? string.Empty;
         SourceFileRecord? file = _scannedFiles.FirstOrDefault(f =>
             string.Equals(f.FullPath, fullPath, StringComparison.OrdinalIgnoreCase));
 
-        if (file == null)
-        {
-            txtDetails.Text = "Select a scanned file to view details.";
-            return;
-        }
-
-        txtDetails.Text = BuildScanDetails(file);
+        txtDetails.Text = file == null
+            ? "Select a scanned file to view details."
+            : BuildScanDetails(file);
     }
 
     private string BuildScanDetails(SourceFileRecord file)
@@ -762,9 +838,61 @@ public partial class frmMain : Form
             $"Hash Status   : Not calculated during Scan";
     }
 
+    private string BuildAnalysisDetails(ConsolidationGroup group)
+    {
+        StringBuilder sb = new();
+
+        sb.AppendLine($"Relative Path : {group.RelativePath}");
+        sb.AppendLine($"Status        : {FormatStatus(group.Status)}");
+        sb.AppendLine($"File Count    : {group.FileCount:N0}");
+        sb.AppendLine($"Decision      : {group.DecisionReason}");
+        sb.AppendLine();
+
+        if (group.SelectedFile != null)
+        {
+            SourceFileRecord selected = group.SelectedFile;
+            sb.AppendLine("Selected File");
+            sb.AppendLine("-------------");
+            sb.AppendLine($"Source Root   : {selected.SourceRoot}");
+            sb.AppendLine($"Full Path     : {selected.FullPath}");
+            sb.AppendLine($"Size          : {FormatBytes(selected.SizeBytes)} ({selected.SizeBytes:N0} bytes)");
+            sb.AppendLine($"Modified      : {selected.LastModifiedTime:yyyy-MM-dd HH:mm:ss}");
+            sb.AppendLine($"Hash          : {(selected.HashCalculated ? selected.Sha256Hash : "Not required/calculated")}");
+            sb.AppendLine();
+        }
+
+        sb.AppendLine("All Source Candidates");
+        sb.AppendLine("---------------------");
+
+        foreach (SourceFileRecord file in group.Files
+                     .OrderBy(f => SourceOrderIndex(f.SourceRoot))
+                     .ThenByDescending(f => f.LastModifiedTime)
+                     .ThenByDescending(f => f.SizeBytes))
+        {
+            bool isSelected = group.SelectedFile != null &&
+                              string.Equals(group.SelectedFile.FullPath, file.FullPath, StringComparison.OrdinalIgnoreCase);
+
+            sb.AppendLine(isSelected ? "[SELECTED]" : "[SKIPPED]");
+            sb.AppendLine($"Source Root   : {file.SourceRoot}");
+            sb.AppendLine($"Full Path     : {file.FullPath}");
+            sb.AppendLine($"Size          : {FormatBytes(file.SizeBytes)} ({file.SizeBytes:N0} bytes)");
+            sb.AppendLine($"Modified      : {file.LastModifiedTime:yyyy-MM-dd HH:mm:ss}");
+            sb.AppendLine($"Hash          : {(file.HashCalculated ? file.Sha256Hash : "Not required/calculated")}");
+
+            if (!string.IsNullOrWhiteSpace(file.ErrorMessage))
+                sb.AppendLine($"Error         : {file.ErrorMessage}");
+
+            sb.AppendLine();
+        }
+
+        return sb.ToString();
+    }
+
     private void ClearScanResultsOnly()
     {
         _scannedFiles.Clear();
+        _groups.Clear();
+        _resultsMode = ResultsMode.Scan;
         dgvResults.Rows.Clear();
         txtDetails.Clear();
     }
@@ -776,6 +904,42 @@ public partial class frmMain : Form
         lblUnique.Text = unique.ToString("N0");
         lblDuplicates.Text = duplicates.ToString("N0");
         lblConflicts.Text = conflicts.ToString("N0");
+    }
+
+    private int SourceOrderIndex(string sourceRoot)
+    {
+        for (int i = 0; i < lstSourceFolders.Items.Count; i++)
+        {
+            string item = lstSourceFolders.Items[i]?.ToString() ?? string.Empty;
+            if (string.Equals(item, sourceRoot, StringComparison.OrdinalIgnoreCase))
+                return i;
+        }
+
+        return int.MaxValue;
+    }
+
+    private static string FormatStatus(ConsolidationStatus status)
+    {
+        return status switch
+        {
+            ConsolidationStatus.Unique => "Unique",
+            ConsolidationStatus.DuplicateSameContent => "Duplicate Same Content",
+            ConsolidationStatus.ConflictDifferentContent => "Conflict Different Content",
+            ConsolidationStatus.Error => "Error",
+            _ => "Unknown"
+        };
+    }
+
+    private Color StatusColor(ConsolidationStatus status)
+    {
+        return status switch
+        {
+            ConsolidationStatus.Unique => Color.FromArgb(0, 95, 55),
+            ConsolidationStatus.DuplicateSameContent => Color.FromArgb(125, 82, 0),
+            ConsolidationStatus.ConflictDifferentContent => Color.FromArgb(175, 45, 45),
+            ConsolidationStatus.Error => Color.FromArgb(175, 45, 45),
+            _ => Color.FromArgb(35, 45, 60)
+        };
     }
 
     private void SetStatus(string title, string message, bool isError = false)
@@ -799,6 +963,12 @@ public partial class frmMain : Form
 
         return $"{size:0.##} {units[unitIndex]}";
     }
+}
+
+internal enum ResultsMode
+{
+    Scan = 0,
+    Analysis = 1
 }
 
 internal static class MultiFolderPicker
