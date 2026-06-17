@@ -1,0 +1,14 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FileForge.Domain\FileForge.Domain.csproj" />
+    <ProjectReference Include="..\FileForge.Infrastructure\FileForge.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>
