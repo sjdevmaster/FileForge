@@ -167,9 +167,9 @@ public partial class frmMain : Form
         pnlHeader.Controls.Add(lblTitle);
         pnlHeader.Controls.Add(lblTagline);
         pnlHeader.Controls.Add(CreateStatCard("Sources", lblSources));
-        pnlHeader.Controls.Add(CreateStatCard("Files", lblFiles));
-        pnlHeader.Controls.Add(CreateStatCard("Unique", lblUnique));
-        pnlHeader.Controls.Add(CreateStatCard("Duplicates", lblDuplicates));
+        pnlHeader.Controls.Add(CreateStatCard("Total Files", lblFiles));
+        pnlHeader.Controls.Add(CreateStatCard("To Archive", lblUnique));
+        pnlHeader.Controls.Add(CreateStatCard("Dup. Skipped", lblDuplicates));
         pnlHeader.Controls.Add(CreateStatCard("Conflicts", lblConflicts));
         pnlHeader.Controls.Add(btnScan);
         pnlHeader.Controls.Add(btnAnalyze);
@@ -200,7 +200,7 @@ public partial class frmMain : Form
         valueLabel.Text = "0";
         valueLabel.AutoSize = false;
         valueLabel.TextAlign = ContentAlignment.MiddleRight;
-        valueLabel.Font = new Font("Segoe UI", 15F, FontStyle.Bold);
+        valueLabel.Font = new Font("Segoe UI", 14.5F, FontStyle.Bold);
         valueLabel.ForeColor = _darkBlue;
         valueLabel.BackColor = _panel;
 
@@ -577,8 +577,8 @@ public partial class frmMain : Form
             _ => lblConflicts
         };
 
-        caption?.SetBounds(10, 9, Math.Max(30, width - 62), 24);
-        value.SetBounds(width - 52, 4, 42, height - 8);
+        caption?.SetBounds(10, 9, Math.Max(30, width - 88), 24);
+        value.SetBounds(width - 78, 4, 68, height - 8);
     }
 
     private static void SetButtonBounds(Button button, ref int x, int y, int width)
@@ -797,12 +797,18 @@ public partial class frmMain : Form
 
             dgvResults.ResumeLayout();
 
-            int uniqueCount = _groups.Count(g => g.Status == ConsolidationStatus.Unique);
-            int duplicateCount = _groups.Count(g => g.Status == ConsolidationStatus.DuplicateSameContent);
-            int conflictCount = _groups.Count(g => g.Status == ConsolidationStatus.ConflictDifferentContent || g.Status == ConsolidationStatus.Error);
+            ArchiveStatistics stats = CalculateArchiveStatistics();
 
-            SetStatValues(lstSourceFolders.Items.Count, _scannedFiles.Count, uniqueCount, duplicateCount, conflictCount);
-            SetStatus("Analyze complete", $"Groups: {_groups.Count:N0}. Unique: {uniqueCount:N0}. Duplicates: {duplicateCount:N0}. Conflicts/Errors: {conflictCount:N0}. Hashed: {hashedCount:N0}.");
+            SetStatValues(
+                lstSourceFolders.Items.Count,
+                _scannedFiles.Count,
+                stats.ToArchiveFiles,
+                stats.DuplicateFilesSkipped,
+                stats.ConflictGroups);
+
+            SetStatus(
+                "Analyze complete",
+                $"Total files: {_scannedFiles.Count:N0}. To archive: {stats.ToArchiveFiles:N0}. Unique: {stats.UniqueGroups:N0}. Duplicate groups: {stats.DuplicateGroups:N0}. Duplicate files skipped: {stats.DuplicateFilesSkipped:N0}. Conflicts/Errors: {stats.ConflictGroups:N0}. Hashed: {hashedCount:N0}.");
 
             if (dgvResults.Rows.Count > 0)
                 dgvResults.Rows[0].Selected = true;
@@ -940,6 +946,14 @@ public partial class frmMain : Form
             _resultsMode = ResultsMode.Copy;
             RefreshGridAfterCopy();
 
+            ArchiveStatistics stats = CalculateArchiveStatistics();
+            SetStatValues(
+                lstSourceFolders.Items.Count,
+                _scannedFiles.Count,
+                stats.ToArchiveFiles,
+                stats.DuplicateFilesSkipped,
+                stats.ConflictGroups);
+
             string emptyDirText = chkPreserveEmptyDirectories.Checked
                 ? $" Empty folders recreated: {emptyDirectoriesCreated:N0}."
                 : string.Empty;
@@ -1046,6 +1060,14 @@ public partial class frmMain : Form
 
             int verified = results.Count(r => r.IsVerified);
             int failed = results.Count - verified;
+
+            ArchiveStatistics stats = CalculateArchiveStatistics();
+            SetStatValues(
+                lstSourceFolders.Items.Count,
+                _scannedFiles.Count,
+                stats.ToArchiveFiles,
+                stats.DuplicateFilesSkipped,
+                stats.ConflictGroups);
 
             if (failed > 0)
             {
@@ -1420,6 +1442,31 @@ public partial class frmMain : Form
         return sb.ToString();
     }
 
+
+    private ArchiveStatistics CalculateArchiveStatistics()
+    {
+        int uniqueGroups = _groups.Count(g => g.Status == ConsolidationStatus.Unique && g.SelectedFile != null);
+        int duplicateGroups = _groups.Count(g => g.Status == ConsolidationStatus.DuplicateSameContent && g.SelectedFile != null);
+        int conflictGroups = _groups.Count(g => g.Status == ConsolidationStatus.ConflictDifferentContent || g.Status == ConsolidationStatus.Error);
+
+        int toArchiveFiles = _groups.Count(g => g.SelectedFile != null &&
+                                                (g.Status == ConsolidationStatus.Unique ||
+                                                 g.Status == ConsolidationStatus.DuplicateSameContent));
+
+        int duplicateFilesSkipped = _groups
+            .Where(g => g.Status == ConsolidationStatus.DuplicateSameContent)
+            .Sum(g => Math.Max(0, g.Files.Count - 1));
+
+        return new ArchiveStatistics
+        {
+            UniqueGroups = uniqueGroups,
+            DuplicateGroups = duplicateGroups,
+            ConflictGroups = conflictGroups,
+            ToArchiveFiles = toArchiveFiles,
+            DuplicateFilesSkipped = duplicateFilesSkipped
+        };
+    }
+
     private void ClearScanResultsOnly()
     {
         _scannedFiles.Clear();
@@ -1431,13 +1478,13 @@ public partial class frmMain : Form
         txtDetails.Clear();
     }
 
-    private void SetStatValues(int sources, int files, int unique, int duplicates, int conflicts)
+    private void SetStatValues(int sources, int totalFiles, int toArchiveFiles, int duplicateFilesSkipped, int conflictGroups)
     {
         lblSources.Text = sources.ToString("N0");
-        lblFiles.Text = files.ToString("N0");
-        lblUnique.Text = unique.ToString("N0");
-        lblDuplicates.Text = duplicates.ToString("N0");
-        lblConflicts.Text = conflicts.ToString("N0");
+        lblFiles.Text = totalFiles.ToString("N0");
+        lblUnique.Text = toArchiveFiles.ToString("N0");
+        lblDuplicates.Text = duplicateFilesSkipped.ToString("N0");
+        lblConflicts.Text = conflictGroups.ToString("N0");
     }
 
     private int SourceOrderIndex(string sourceRoot)
@@ -1538,6 +1585,20 @@ public partial class frmMain : Form
 
         return $"{size:0.##} {units[unitIndex]}";
     }
+}
+
+
+internal sealed class ArchiveStatistics
+{
+    public int UniqueGroups { get; set; }
+
+    public int DuplicateGroups { get; set; }
+
+    public int ConflictGroups { get; set; }
+
+    public int ToArchiveFiles { get; set; }
+
+    public int DuplicateFilesSkipped { get; set; }
 }
 
 internal enum ResultsMode
