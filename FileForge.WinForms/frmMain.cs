@@ -18,10 +18,12 @@ public partial class frmMain : Form
     private readonly FolderScanService _folderScanService = new();
     private readonly FileHashService _fileHashService = new();
     private readonly FileSelectionService _fileSelectionService = new();
+    private readonly CopyVerificationService _copyVerificationService = new();
 
     private readonly List<SourceFileRecord> _scannedFiles = new();
     private readonly List<ConsolidationGroup> _groups = new();
     private readonly Dictionary<string, CopyResult> _copyResultsByRelativePath = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, CopyVerificationResult> _verificationResultsByRelativePath = new(StringComparer.OrdinalIgnoreCase);
     private ResultsMode _resultsMode = ResultsMode.Scan;
 
     private Panel pnlHeader = null!;
@@ -493,7 +495,7 @@ public partial class frmMain : Form
 
         btnAnalyze.Click += BtnAnalyze_Click;
         btnCopy.Click += BtnCopy_Click;
-        btnVerify.Click += (_, _) => SetStatus("Not connected", "Verify will be reconnected after Copy is confirmed.");
+        btnVerify.Click += BtnVerify_Click;
         btnReport.Click += (_, _) => SetStatus("Not connected", "Report engine will be connected later.");
         btnOptions.Click += (_, _) => SetStatus("Options", "Preserve Empty Directories is available in the Target panel.");
     }
@@ -768,6 +770,8 @@ public partial class frmMain : Form
             int hashedCount = await _fileHashService.CalculateRequiredHashesAsync(_scannedFiles, progress);
             List<string> sourceOrder = lstSourceFolders.Items.Cast<string>().ToList();
 
+            _copyResultsByRelativePath.Clear();
+            _verificationResultsByRelativePath.Clear();
             _groups.Clear();
             _groups.AddRange(_fileSelectionService.BuildGroups(_scannedFiles, sourceOrder));
 
@@ -887,6 +891,7 @@ public partial class frmMain : Form
             SetStatus("Copying", "Preparing target archive folder...");
 
             _copyResultsByRelativePath.Clear();
+            _verificationResultsByRelativePath.Clear();
             Directory.CreateDirectory(targetRoot);
 
             int emptyDirectoriesCreated = 0;
@@ -960,6 +965,109 @@ public partial class frmMain : Form
         {
             SetStatus("Copy failed", ex.Message, true);
             MessageBox.Show(ex.Message, "Copy Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            SetCommandButtonsEnabled(true);
+            Cursor = Cursors.Default;
+        }
+    }
+
+    private async void BtnVerify_Click(object? sender, EventArgs e)
+    {
+        if (_groups.Count == 0)
+        {
+            MessageBox.Show("Please run Analyze before Verify.", "FileForge", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            SetStatus("Verify blocked", "Run Analyze first.", true);
+            return;
+        }
+
+        string targetRoot = txtTargetFolder.Text.Trim();
+
+        if (string.IsNullOrWhiteSpace(targetRoot) || !Directory.Exists(targetRoot))
+        {
+            MessageBox.Show("Please select a valid target master folder before Verify.", "FileForge", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            SetStatus("Verify blocked", "Select a valid target folder first.", true);
+            return;
+        }
+
+        List<ConsolidationGroup> expectedGroups = _groups
+            .Where(g => g.SelectedFile != null &&
+                        (g.Status == ConsolidationStatus.Unique ||
+                         g.Status == ConsolidationStatus.DuplicateSameContent))
+            .ToList();
+
+        if (expectedGroups.Count == 0)
+        {
+            SetStatus("Verify blocked", "No expected archive files found. Run Analyze and Copy first.", true);
+            return;
+        }
+
+        if (_copyResultsByRelativePath.Count == 0)
+        {
+            DialogResult proceed = MessageBox.Show(
+                "No copy result is available in this session. Verify can still check the target folder against the current analysis results. Continue?",
+                "Verify Without Copy Result",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+
+            if (proceed != DialogResult.Yes)
+            {
+                SetStatus("Verify cancelled", "No verification was performed.");
+                return;
+            }
+        }
+
+        try
+        {
+            Cursor = Cursors.WaitCursor;
+            SetCommandButtonsEnabled(false);
+            SetStatus("Verifying", "Preparing archive verification...");
+
+            Progress<CopyVerificationProgress> progress = new(verifyProgress =>
+            {
+                SetStatus(
+                    "Verifying",
+                    $"Checking {verifyProgress.Completed:N0}/{verifyProgress.Total:N0}: {verifyProgress.CurrentFile}");
+            });
+
+            List<CopyVerificationResult> results = await _copyVerificationService.VerifyCopiedFilesAsync(
+                expectedGroups,
+                targetRoot,
+                progress);
+
+            _verificationResultsByRelativePath.Clear();
+
+            foreach (CopyVerificationResult result in results)
+                _verificationResultsByRelativePath[result.RelativePath] = result;
+
+            _resultsMode = ResultsMode.Verify;
+            RefreshGridAfterVerification(expectedGroups);
+
+            int verified = results.Count(r => r.IsVerified);
+            int failed = results.Count - verified;
+
+            if (failed > 0)
+            {
+                SetStatus("Verify completed with failures", $"Verified: {verified:N0}. Failed: {failed:N0}.", true);
+                MessageBox.Show(
+                    $"Verification completed with failures.\n\nVerified: {verified:N0}\nFailed: {failed:N0}\n\nSelect failed rows to see the reason in Details.",
+                    "Verification Completed With Failures",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+            else
+            {
+                SetStatus("Verify complete", $"All expected archive files verified successfully. Verified: {verified:N0}.");
+            }
+
+            if (dgvResults.Rows.Count > 0)
+                dgvResults.Rows[0].Selected = true;
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Verify failed", ex.Message, true);
+            MessageBox.Show(ex.Message, "Verify Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
         {
@@ -1064,6 +1172,42 @@ public partial class frmMain : Form
         }
     }
 
+    private void RefreshGridAfterVerification(IReadOnlyList<ConsolidationGroup> expectedGroups)
+    {
+        dgvResults.Rows.Clear();
+        dgvResults.SuspendLayout();
+
+        foreach (ConsolidationGroup group in expectedGroups.OrderBy(g => g.RelativePath, StringComparer.OrdinalIgnoreCase))
+        {
+            SourceFileRecord selected = group.SelectedFile!;
+            _verificationResultsByRelativePath.TryGetValue(group.RelativePath, out CopyVerificationResult? verification);
+
+            string statusText = verification == null
+                ? "Not Verified"
+                : verification.IsVerified ? "Verified" : $"Verify Failed: {FormatVerificationStatus(verification.Status)}";
+
+            string destinationPath = verification?.DestinationPath ?? Path.Combine(txtTargetFolder.Text.Trim(), group.RelativePath);
+            long displaySize = verification?.ActualSizeBytes > 0
+                ? verification.ActualSizeBytes
+                : selected.SizeBytes;
+
+            dgvResults.Rows.Add(
+                group.RelativePath,
+                statusText,
+                selected.SourceRoot,
+                destinationPath,
+                FormatBytes(displaySize),
+                verification?.Message ?? string.Empty);
+
+            int rowIndex = dgvResults.Rows.Count - 1;
+            dgvResults.Rows[rowIndex].DefaultCellStyle.ForeColor = verification == null
+                ? Color.FromArgb(35, 45, 60)
+                : verification.IsVerified ? Color.FromArgb(0, 95, 55) : Color.FromArgb(175, 45, 45);
+        }
+
+        dgvResults.ResumeLayout();
+    }
+
     private void SetCommandButtonsEnabled(bool enabled)
     {
         btnScan.Enabled = enabled;
@@ -1084,6 +1228,21 @@ public partial class frmMain : Form
     {
         if (dgvResults.SelectedRows.Count == 0)
             return;
+
+        if (_resultsMode == ResultsMode.Verify)
+        {
+            string relativePath = dgvResults.SelectedRows[0].Cells["RelativePath"].Value?.ToString() ?? string.Empty;
+            ConsolidationGroup? group = _groups.FirstOrDefault(g =>
+                string.Equals(g.RelativePath, relativePath, StringComparison.OrdinalIgnoreCase));
+
+            _verificationResultsByRelativePath.TryGetValue(relativePath, out CopyVerificationResult? verificationResult);
+
+            txtDetails.Text = group == null
+                ? "Select a verification row to view details."
+                : BuildVerificationDetails(group, verificationResult);
+
+            return;
+        }
 
         if (_resultsMode == ResultsMode.Copy)
         {
@@ -1188,6 +1347,45 @@ public partial class frmMain : Form
 
 
 
+    private string BuildVerificationDetails(ConsolidationGroup group, CopyVerificationResult? verificationResult)
+    {
+        StringBuilder sb = new();
+
+        sb.AppendLine("Verification Result");
+        sb.AppendLine("-------------------");
+        sb.AppendLine($"Relative Path : {group.RelativePath}");
+        sb.AppendLine($"Decision      : {FormatStatus(group.Status)}");
+        sb.AppendLine($"Reason        : {group.DecisionReason}");
+        sb.AppendLine();
+
+        if (verificationResult == null)
+        {
+            sb.AppendLine("Verify Status : Not verified / no verification result available.");
+        }
+        else
+        {
+            sb.AppendLine($"Verify Status : {(verificationResult.IsVerified ? "Verified" : "Failed")}");
+            sb.AppendLine($"Failure Type  : {FormatVerificationStatus(verificationResult.Status)}");
+            sb.AppendLine($"Message       : {verificationResult.Message}");
+            sb.AppendLine($"Source        : {verificationResult.SourcePath}");
+            sb.AppendLine($"Target        : {verificationResult.DestinationPath}");
+            sb.AppendLine($"Expected Size : {verificationResult.ExpectedSizeBytes:N0} bytes ({FormatBytes(verificationResult.ExpectedSizeBytes)})");
+            sb.AppendLine($"Actual Size   : {verificationResult.ActualSizeBytes:N0} bytes ({FormatBytes(verificationResult.ActualSizeBytes)})");
+            sb.AppendLine();
+            sb.AppendLine("Hash Check");
+            sb.AppendLine("----------");
+            sb.AppendLine($"Source Hash   : {BlankIfMissing(verificationResult.ExpectedHash)}");
+            sb.AppendLine($"Target Hash   : {BlankIfMissing(verificationResult.ActualHash)}");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("Analysis Details");
+        sb.AppendLine("----------------");
+        sb.Append(BuildAnalysisDetails(group));
+
+        return sb.ToString();
+    }
+
     private string BuildCopyDetails(ConsolidationGroup group, CopyResult? copyResult)
     {
         StringBuilder sb = new();
@@ -1227,6 +1425,7 @@ public partial class frmMain : Form
         _scannedFiles.Clear();
         _groups.Clear();
         _copyResultsByRelativePath.Clear();
+        _verificationResultsByRelativePath.Clear();
         _resultsMode = ResultsMode.Scan;
         dgvResults.Rows.Clear();
         txtDetails.Clear();
@@ -1277,6 +1476,27 @@ public partial class frmMain : Form
         };
     }
 
+    private static string FormatVerificationStatus(CopyVerificationStatus status)
+    {
+        return status switch
+        {
+            CopyVerificationStatus.Verified => "Verified",
+            CopyVerificationStatus.Missing => "Missing Target File",
+            CopyVerificationStatus.SizeMismatch => "Size Mismatch",
+            CopyVerificationStatus.HashMismatch => "Hash Mismatch",
+            CopyVerificationStatus.SourceMissing => "Source Missing",
+            CopyVerificationStatus.AccessDenied => "Access Denied",
+            CopyVerificationStatus.IOError => "I/O Error",
+            CopyVerificationStatus.Error => "Error",
+            _ => "Unknown"
+        };
+    }
+
+    private static string BlankIfMissing(string value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? "Not available" : value;
+    }
+
     private void SetStatus(string title, string message, bool isError = false)
     {
         lblStatusTitle.Text = title;
@@ -1324,7 +1544,8 @@ internal enum ResultsMode
 {
     Scan = 0,
     Analysis = 1,
-    Copy = 2
+    Copy = 2,
+    Verify = 3
 }
 
 internal sealed class CopyResult
