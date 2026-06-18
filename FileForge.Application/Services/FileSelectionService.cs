@@ -18,7 +18,10 @@ public sealed class FileSelectionService
             .ToList();
     }
 
-    private static ConsolidationGroup BuildGroup(string relativePath, List<SourceFileRecord> files, IReadOnlyList<string> sourceRootOrder)
+    private static ConsolidationGroup BuildGroup(
+        string relativePath,
+        List<SourceFileRecord> files,
+        IReadOnlyList<string> sourceRootOrder)
     {
         ConsolidationGroup group = new()
         {
@@ -41,17 +44,22 @@ public sealed class FileSelectionService
 
         if (distinctSizeCount > 1)
         {
-            group.SelectedFile = SelectBestCandidate(files, sourceRootOrder);
+            group.SelectedFile = SelectLatestModifiedCandidate(files, sourceRootOrder);
             group.Status = ConsolidationStatus.ConflictDifferentContent;
-            group.DecisionReason = "Same relative path but different file sizes. Content differs; hash not required.";
+            group.DecisionReason =
+                "Conflict auto-resolved. Main archive version selected by latest modified date. " +
+                "Older-dated conflicting versions preserved under _FileForge_Conflicts during Copy. " +
+                "File sizes differ, so content differs; hash not required.";
             return group;
         }
 
         if (files.Any(f => !f.HashCalculated))
         {
-            group.SelectedFile = SelectBestCandidate(files, sourceRootOrder);
+            group.SelectedFile = SelectLatestModifiedCandidate(files, sourceRootOrder);
             group.Status = ConsolidationStatus.Error;
-            group.DecisionReason = "One or more same-size files with the same relative path could not be hashed. Review before copying.";
+            group.DecisionReason =
+                "One or more same-size files with the same relative path could not be hashed. " +
+                "Copy is blocked for this group until the file read/hash issue is resolved.";
             return group;
         }
 
@@ -64,17 +72,25 @@ public sealed class FileSelectionService
         {
             group.SelectedFile = SelectFirstSourceCandidate(files, sourceRootOrder);
             group.Status = ConsolidationStatus.DuplicateSameContent;
-            group.DecisionReason = "Same relative path, same file size, and same SHA256 content hash. First selected source root wins; other copies are skipped.";
+            group.DecisionReason =
+                "Same relative path, same file size, and same SHA256 content hash. " +
+                "First selected source root wins; other copies are skipped.";
             return group;
         }
 
-        group.SelectedFile = SelectBestCandidate(files, sourceRootOrder);
+        group.SelectedFile = SelectLatestModifiedCandidate(files, sourceRootOrder);
         group.Status = ConsolidationStatus.ConflictDifferentContent;
-        group.DecisionReason = "Same relative path and same file size, but different SHA256 content hashes. Latest modified/larger file shown as provisional winner; manual review recommended.";
+        group.DecisionReason =
+            "Conflict auto-resolved. Main archive version selected by latest modified date. " +
+            "Older-dated conflicting versions preserved under _FileForge_Conflicts during Copy. " +
+            "Same relative path and same file size, but different SHA256 content hashes.";
+
         return group;
     }
 
-    private static SourceFileRecord SelectFirstSourceCandidate(List<SourceFileRecord> files, IReadOnlyList<string> sourceRootOrder)
+    private static SourceFileRecord SelectFirstSourceCandidate(
+        List<SourceFileRecord> files,
+        IReadOnlyList<string> sourceRootOrder)
     {
         return files
             .OrderBy(f => SourceOrderIndex(f.SourceRoot, sourceRootOrder))
@@ -84,7 +100,9 @@ public sealed class FileSelectionService
             .First();
     }
 
-    private static SourceFileRecord SelectBestCandidate(List<SourceFileRecord> files, IReadOnlyList<string> sourceRootOrder)
+    private static SourceFileRecord SelectLatestModifiedCandidate(
+        List<SourceFileRecord> files,
+        IReadOnlyList<string> sourceRootOrder)
     {
         return files
             .OrderByDescending(f => f.LastModifiedTime)

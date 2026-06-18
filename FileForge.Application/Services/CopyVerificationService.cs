@@ -174,7 +174,8 @@ public sealed class CopyVerificationService
     {
         return group.SelectedFile != null &&
                (group.Status == ConsolidationStatus.Unique ||
-                group.Status == ConsolidationStatus.DuplicateSameContent);
+                group.Status == ConsolidationStatus.DuplicateSameContent ||
+                group.Status == ConsolidationStatus.ConflictDifferentContent);
     }
 }
 

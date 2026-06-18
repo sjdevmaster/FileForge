@@ -33,7 +33,8 @@ public sealed class ReportService
 
     private static string BuildHtml(AuditReportRequest request)
     {
-        int copied = request.CopyRecords.Count(r => r.Success && !r.Skipped);
+        int copied = request.CopyRecords.Count(r => r.Success && !r.Skipped && !r.IsConflictVaultCopy);
+        int conflictVaultCopied = request.CopyRecords.Count(r => r.Success && r.IsConflictVaultCopy);
         int copyFailed = request.CopyRecords.Count(r => !r.Success && !r.Skipped);
         int copySkipped = request.CopyRecords.Count(r => r.Skipped);
         int verified = request.VerificationResults.Count(r => r.IsVerified);
@@ -72,12 +73,12 @@ public sealed class ReportService
 
         sb.AppendLine("<section class=\"card\">");
         sb.AppendLine("<h2>Archive Context</h2>");
-        sb.AppendLine("<table class=\"kv data-table\">");
+        sb.AppendLine("<table class=\"kv\">");
         AddKv(sb, "Application", request.ApplicationName);
         AddKv(sb, "Application Mode", request.ApplicationMode);
         AddKv(sb, "Hash Algorithm", request.HashAlgorithm);
         AddKv(sb, "Preserve Empty Directories", request.PreserveEmptyDirectories ? "Yes" : "No");
-        AddKvPath(sb, "Target Folder", request.TargetRoot);
+        AddKv(sb, "Target Folder", request.TargetRoot);
         AddKv(sb, "Target Safety Policy", request.TargetSafetyPolicy);
         sb.AppendLine("</table>");
         sb.AppendLine("</section>");
@@ -86,18 +87,19 @@ public sealed class ReportService
         sb.AppendLine("<h2>Selected Source Roots</h2>");
         sb.AppendLine("<ol class=\"paths\">");
         foreach (string sourceRoot in request.SourceRoots)
-            sb.AppendLine($"<li>{PathHtml(sourceRoot)}</li>");
+            sb.AppendLine($"<li>{Html(sourceRoot)}</li>");
         sb.AppendLine("</ol>");
         sb.AppendLine("</section>");
 
         sb.AppendLine("<section class=\"card\">");
         sb.AppendLine("<h2>Decision Summary</h2>");
-        sb.AppendLine("<table class=\"data-table\">");
+        sb.AppendLine("<table>");
         sb.AppendLine("<thead><tr><th>Decision</th><th class=\"num\">Groups</th><th>Meaning</th></tr></thead>");
         sb.AppendLine("<tbody>");
         AddDecisionRow(sb, "Unique", request.UniqueGroups, "Only one file exists at the relative path. It is selected for archive.");
         AddDecisionRow(sb, "Duplicate Same Content", request.DuplicateGroups, "Multiple files share the same relative path and same content. One winner is archived; duplicates are skipped.");
-        AddDecisionRow(sb, "Conflict / Error", request.ConflictGroups, "Same relative path with different content, unreadable files, or other issues. Not copied in V1.");
+        AddDecisionRow(sb, "Conflict Auto-Resolved", request.ConflictGroups, "Same relative path with different content. Latest modified version is copied to the main archive; older-dated conflicting versions are preserved under _FileForge_Conflicts.");
+        AddDecisionRow(sb, "Error", request.Groups.Count(g => g.Status == ConsolidationStatus.Error), "Unreadable files, hashing errors, or other issues. These are skipped and require review.");
         sb.AppendLine("</tbody>");
         sb.AppendLine("</table>");
         sb.AppendLine("</section>");
@@ -105,9 +107,10 @@ public sealed class ReportService
         sb.AppendLine("<section class=\"card\">");
         sb.AppendLine("<h2>Copy Summary</h2>");
         sb.AppendLine("<div class=\"mini-grid\">");
-        AddMiniMetric(sb, "Copied", copied);
-        AddMiniMetric(sb, "Skipped", copySkipped);
+        AddMiniMetric(sb, "Main Archive", copied);
+        AddMiniMetric(sb, "Conflict Vault", conflictVaultCopied);
         AddMiniMetric(sb, "Failed", copyFailed);
+        AddMiniMetric(sb, "Skipped", copySkipped);
         sb.AppendLine("</div>");
         sb.AppendLine("</section>");
 
@@ -159,18 +162,15 @@ public sealed class ReportService
     --line: #d7dde8;
 }
 * { box-sizing: border-box; }
-html { overflow-x: hidden; }
 body {
     margin: 0;
     background: var(--bg);
     color: var(--ink);
     font-family: "Segoe UI", Arial, sans-serif;
     font-size: 14px;
-    line-height: 1.4;
-    overflow-x: hidden;
 }
 .page {
-    max-width: 1440px;
+    max-width: 1180px;
     margin: 26px auto;
     padding: 0 18px 36px;
 }
@@ -191,7 +191,7 @@ body {
 .stamp strong { color: #fff; }
 .summary-grid {
     display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(6, 1fr);
     gap: 12px;
     margin: 18px 0;
 }
@@ -201,13 +201,12 @@ body {
     border-radius: 12px;
     padding: 14px 16px;
     box-shadow: 0 3px 10px rgba(20, 35, 60, .05);
-    min-width: 0;
 }
 .metric .label, .mini-metric .label { color: var(--muted); font-size: 12px; }
 .metric .value { font-size: 24px; font-weight: 700; margin-top: 4px; }
 .mini-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(3, 1fr);
     gap: 12px;
 }
 .mini-metric .value { font-size: 20px; font-weight: 700; margin-top: 4px; }
@@ -218,14 +217,9 @@ body {
     margin: 16px 0;
     padding: 18px 20px;
     box-shadow: 0 3px 10px rgba(20, 35, 60, .05);
-    overflow: hidden;
 }
 h2 { margin: 0 0 12px; font-size: 18px; color: #082c56; }
-.data-table {
-    width: 100%;
-    border-collapse: collapse;
-    table-layout: fixed;
-}
+table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 th, td {
     border-bottom: 1px solid var(--line);
     padding: 9px 8px;
@@ -233,56 +227,26 @@ th, td {
     overflow-wrap: anywhere;
     word-break: break-word;
 }
-th {
-    text-align: left;
-    color: #33415c;
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: .04em;
-}
+.paths li, .kv td, td { overflow-wrap: anywhere; word-break: break-word; }
+th { text-align: left; color: #33415c; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
 tr:last-child td { border-bottom: none; }
 .kv td:first-child { width: 230px; color: var(--muted); font-weight: 600; }
-.num {
-    text-align: right;
-    white-space: nowrap;
-    overflow-wrap: normal;
-    word-break: normal;
-}
-.path, .paths li {
-    font-family: "Segoe UI", Arial, sans-serif;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-    line-height: 1.35;
-}
+.num { text-align: right; }
 .paths { margin: 0; padding-left: 22px; }
 .paths li { margin: 6px 0; }
-.status-cell { max-width: 130px; }
 .badge { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
 .good { color: var(--green); }
 .bad { color: var(--red); }
 .warn { color: var(--amber); }
 .warning { color: var(--amber); font-weight: 600; }
 .footer { color: var(--muted); font-size: 12px; text-align: center; padding: 18px; }
-.archive-table col:nth-child(1) { width: 34%; }
-.archive-table col:nth-child(2) { width: 13%; }
-.archive-table col:nth-child(3) { width: 36%; }
-.archive-table col:nth-child(4) { width: 8%; }
-.archive-table col:nth-child(5) { width: 9%; }
-.failure-table col:nth-child(1) { width: 24%; }
-.failure-table col:nth-child(2) { width: 16%; }
-.failure-table col:nth-child(3) { width: 20%; }
-.failure-table col:nth-child(4) { width: 20%; }
-.failure-table col:nth-child(5) { width: 20%; }
 @media print {
     body { background: #fff; }
     .page { margin: 0; max-width: none; }
     .card, .metric, .hero { box-shadow: none; }
 }
-@media (max-width: 1100px) {
-    .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
 @media (max-width: 900px) {
-    .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .summary-grid { grid-template-columns: repeat(2, 1fr); }
     .mini-grid { grid-template-columns: 1fr; }
     .hero { align-items: flex-start; flex-direction: column; }
     .stamp { text-align: left; }
@@ -312,11 +276,6 @@ tr:last-child td { border-bottom: none; }
         sb.AppendLine($"<tr><td>{Html(key)}</td><td>{Html(value)}</td></tr>");
     }
 
-    private static void AddKvPath(StringBuilder sb, string key, string value)
-    {
-        sb.AppendLine($"<tr><td>{Html(key)}</td><td class=\"path\">{PathHtml(value)}</td></tr>");
-    }
-
     private static void AddDecisionRow(StringBuilder sb, string decision, int count, string meaning)
     {
         sb.AppendLine($"<tr><td>{Html(decision)}</td><td class=\"num\">{count:N0}</td><td>{Html(meaning)}</td></tr>");
@@ -325,7 +284,7 @@ tr:last-child td { border-bottom: none; }
     private static void AddConflictSection(StringBuilder sb, AuditReportRequest request)
     {
         List<ConsolidationGroup> conflicts = request.Groups
-            .Where(g => g.Status == ConsolidationStatus.ConflictDifferentContent || g.Status == ConsolidationStatus.Error)
+            .Where(g => g.Status == ConsolidationStatus.ConflictDifferentContent)
             .OrderBy(g => g.RelativePath, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
@@ -333,17 +292,91 @@ tr:last-child td { border-bottom: none; }
             return;
 
         sb.AppendLine("<section class=\"card\">");
-        sb.AppendLine("<h2>Conflicts / Errors Requiring Review</h2>");
-        sb.AppendLine("<table class=\"data-table\">");
-        sb.AppendLine("<thead><tr><th>Relative Path</th><th>Status</th><th>Reason</th><th class=\"num\">Candidates</th></tr></thead>");
+        sb.AppendLine("<h2>Auto-Resolved Conflicts</h2>");
+        sb.AppendLine("<p class=\"warning\">Conflict auto-resolved. Main archive version selected by latest modified date. Older-dated conflicting versions preserved under _FileForge_Conflicts.</p>");
+        sb.AppendLine("<table>");
+        sb.AppendLine("<thead><tr><th>Relative Path</th><th>Main Archive Source</th><th>Resolution</th><th class=\"num\">Older Versions</th></tr></thead>");
         sb.AppendLine("<tbody>");
 
         foreach (ConsolidationGroup group in conflicts)
         {
+            SourceFileRecord? selected = group.SelectedFile;
+            int olderVersions = selected == null
+                ? 0
+                : group.Files.Count(f => !string.Equals(f.FullPath, selected.FullPath, StringComparison.OrdinalIgnoreCase));
+
             sb.AppendLine("<tr>");
-            sb.AppendLine($"<td class=\"path\">{PathHtml(group.RelativePath)}</td>");
-            sb.AppendLine($"<td class=\"bad status-cell\">{Html(FormatStatus(group.Status))}</td>");
-            sb.AppendLine($"<td>{Html(group.DecisionReason)}</td>");
+            sb.AppendLine($"<td>{Html(group.RelativePath)}</td>");
+            sb.AppendLine($"<td>{Html(selected == null ? string.Empty : request.IncludeFullSourcePaths ? selected.FullPath : selected.SourceRoot)}</td>");
+            sb.AppendLine("<td>Latest modified version copied to the main archive. Older-dated conflicting versions preserved in the conflict vault.</td>");
+            sb.AppendLine($"<td class=\"num\">{olderVersions:N0}</td>");
+            sb.AppendLine("</tr>");
+        }
+
+        sb.AppendLine("</tbody>");
+        sb.AppendLine("</table>");
+        sb.AppendLine("</section>");
+
+        AddConflictVaultSection(sb, request);
+        AddErrorSection(sb, request);
+    }
+
+    private static void AddConflictVaultSection(StringBuilder sb, AuditReportRequest request)
+    {
+        List<AuditCopyRecord> vaultRecords = request.CopyRecords
+            .Where(r => r.IsConflictVaultCopy)
+            .OrderBy(r => r.OriginalRelativePath, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(r => r.RelativePath, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (vaultRecords.Count == 0)
+            return;
+
+        sb.AppendLine("<section class=\"card\">");
+        sb.AppendLine("<h2>Conflict Vault Copies</h2>");
+        sb.AppendLine("<table>");
+        sb.AppendLine("<thead><tr><th>Original Relative Path</th><th>Vault Relative Path</th><th>Source</th><th>Target</th><th>Status</th></tr></thead>");
+        sb.AppendLine("<tbody>");
+
+        foreach (AuditCopyRecord record in vaultRecords)
+        {
+            sb.AppendLine("<tr>");
+            sb.AppendLine($"<td>{Html(record.OriginalRelativePath)}</td>");
+            sb.AppendLine($"<td>{Html(record.RelativePath)}</td>");
+            sb.AppendLine($"<td>{Html(request.IncludeFullSourcePaths ? record.SourcePath : Path.GetFileName(record.SourcePath))}</td>");
+            sb.AppendLine($"<td>{Html(record.DestinationPath)}</td>");
+            string statusClass = record.Success ? "good" : "bad";
+            string statusText = record.Success ? "Preserved" : "Failed";
+            sb.AppendLine($"<td class=\"{statusClass}\">{Html(statusText)}</td>");
+            sb.AppendLine("</tr>");
+        }
+
+        sb.AppendLine("</tbody>");
+        sb.AppendLine("</table>");
+        sb.AppendLine("</section>");
+    }
+
+    private static void AddErrorSection(StringBuilder sb, AuditReportRequest request)
+    {
+        List<ConsolidationGroup> errors = request.Groups
+            .Where(g => g.Status == ConsolidationStatus.Error)
+            .OrderBy(g => g.RelativePath, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (errors.Count == 0)
+            return;
+
+        sb.AppendLine("<section class=\"card\">");
+        sb.AppendLine("<h2>Errors Requiring Review</h2>");
+        sb.AppendLine("<table>");
+        sb.AppendLine("<thead><tr><th>Relative Path</th><th>Reason</th><th class=\"num\">Candidates</th></tr></thead>");
+        sb.AppendLine("<tbody>");
+
+        foreach (ConsolidationGroup group in errors)
+        {
+            sb.AppendLine("<tr>");
+            sb.AppendLine($"<td>{Html(group.RelativePath)}</td>");
+            sb.AppendLine($"<td class=\"bad\">{Html(group.DecisionReason)}</td>");
             sb.AppendLine($"<td class=\"num\">{group.Files.Count:N0}</td>");
             sb.AppendLine("</tr>");
         }
@@ -365,19 +398,17 @@ tr:last-child td { border-bottom: none; }
 
         sb.AppendLine("<section class=\"card\">");
         sb.AppendLine("<h2>Copy Failures</h2>");
-        sb.AppendLine("<table class=\"data-table failure-table\">");
-        sb.AppendLine("<colgroup><col><col><col><col><col></colgroup>");
-        sb.AppendLine("<thead><tr><th>Relative Path</th><th>Reason</th><th>Source</th><th>Target</th><th>Status</th></tr></thead>");
+        sb.AppendLine("<table>");
+        sb.AppendLine("<thead><tr><th>Relative Path</th><th>Reason</th><th>Source</th><th>Target</th></tr></thead>");
         sb.AppendLine("<tbody>");
 
         foreach (AuditCopyRecord record in failed)
         {
             sb.AppendLine("<tr>");
-            sb.AppendLine($"<td class=\"path\">{PathHtml(record.RelativePath)}</td>");
+            sb.AppendLine($"<td>{Html(record.RelativePath)}</td>");
             sb.AppendLine($"<td class=\"bad\">{Html(record.Message)}</td>");
-            sb.AppendLine($"<td class=\"path\">{PathHtml(request.IncludeFullSourcePaths ? record.SourcePath : Path.GetFileName(record.SourcePath))}</td>");
-            sb.AppendLine($"<td class=\"path\">{PathHtml(record.DestinationPath)}</td>");
-            sb.AppendLine("<td class=\"bad\">Failed</td>");
+            sb.AppendLine($"<td>{Html(request.IncludeFullSourcePaths ? record.SourcePath : Path.GetFileName(record.SourcePath))}</td>");
+            sb.AppendLine($"<td>{Html(record.DestinationPath)}</td>");
             sb.AppendLine("</tr>");
         }
 
@@ -398,19 +429,18 @@ tr:last-child td { border-bottom: none; }
 
         sb.AppendLine("<section class=\"card\">");
         sb.AppendLine("<h2>Verification Failures</h2>");
-        sb.AppendLine("<table class=\"data-table failure-table\">");
-        sb.AppendLine("<colgroup><col><col><col><col><col></colgroup>");
+        sb.AppendLine("<table>");
         sb.AppendLine("<thead><tr><th>Relative Path</th><th>Failure</th><th>Message</th><th>Source</th><th>Target</th></tr></thead>");
         sb.AppendLine("<tbody>");
 
         foreach (CopyVerificationResult record in failed)
         {
             sb.AppendLine("<tr>");
-            sb.AppendLine($"<td class=\"path\">{PathHtml(record.RelativePath)}</td>");
+            sb.AppendLine($"<td>{Html(record.RelativePath)}</td>");
             sb.AppendLine($"<td class=\"bad\">{Html(record.Status.ToString())}</td>");
             sb.AppendLine($"<td>{Html(record.Message)}</td>");
-            sb.AppendLine($"<td class=\"path\">{PathHtml(request.IncludeFullSourcePaths ? record.SourcePath : Path.GetFileName(record.SourcePath))}</td>");
-            sb.AppendLine($"<td class=\"path\">{PathHtml(record.DestinationPath)}</td>");
+            sb.AppendLine($"<td>{Html(request.IncludeFullSourcePaths ? record.SourcePath : Path.GetFileName(record.SourcePath))}</td>");
+            sb.AppendLine($"<td>{Html(record.DestinationPath)}</td>");
             sb.AppendLine("</tr>");
         }
 
@@ -424,14 +454,14 @@ tr:last-child td { border-bottom: none; }
         List<ConsolidationGroup> selectedGroups = request.Groups
             .Where(g => g.SelectedFile != null &&
                         (g.Status == ConsolidationStatus.Unique ||
-                         g.Status == ConsolidationStatus.DuplicateSameContent))
+                         g.Status == ConsolidationStatus.DuplicateSameContent ||
+                         g.Status == ConsolidationStatus.ConflictDifferentContent))
             .OrderBy(g => g.RelativePath, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         sb.AppendLine("<section class=\"card\">");
         sb.AppendLine("<h2>Archive Decisions</h2>");
-        sb.AppendLine("<table class=\"data-table archive-table\">");
-        sb.AppendLine("<colgroup><col><col><col><col><col></colgroup>");
+        sb.AppendLine("<table>");
         sb.AppendLine("<thead><tr><th>Relative Path</th><th>Decision</th><th>Selected Source</th><th class=\"num\">Candidates</th><th class=\"num\">Size</th></tr></thead>");
         sb.AppendLine("<tbody>");
 
@@ -439,9 +469,9 @@ tr:last-child td { border-bottom: none; }
         {
             SourceFileRecord selected = group.SelectedFile!;
             sb.AppendLine("<tr>");
-            sb.AppendLine($"<td class=\"path\">{PathHtml(group.RelativePath)}</td>");
-            sb.AppendLine($"<td class=\"status-cell\">{Html(FormatStatus(group.Status))}</td>");
-            sb.AppendLine($"<td class=\"path\">{PathHtml(request.IncludeFullSourcePaths ? selected.FullPath : selected.SourceRoot)}</td>");
+            sb.AppendLine($"<td>{Html(group.RelativePath)}</td>");
+            sb.AppendLine($"<td>{Html(FormatStatus(group.Status))}</td>");
+            sb.AppendLine($"<td>{Html(request.IncludeFullSourcePaths ? selected.FullPath : selected.SourceRoot)}</td>");
             sb.AppendLine($"<td class=\"num\">{group.Files.Count:N0}</td>");
             sb.AppendLine($"<td class=\"num\">{selected.SizeBytes:N0}</td>");
             sb.AppendLine("</tr>");
@@ -467,16 +497,6 @@ tr:last-child td { border-bottom: none; }
     private static string Html(string? value)
     {
         return WebUtility.HtmlEncode(value ?? string.Empty);
-    }
-
-    private static string PathHtml(string? value)
-    {
-        string encoded = Html(value);
-        return encoded
-            .Replace("\\", "\\<wbr>")
-            .Replace("/", "/<wbr>")
-            .Replace("_", "_<wbr>")
-            .Replace("-", "-<wbr>");
     }
 }
 
@@ -525,6 +545,8 @@ public sealed class AuditCopyRecord
 {
     public string RelativePath { get; set; } = string.Empty;
 
+    public string OriginalRelativePath { get; set; } = string.Empty;
+
     public string SourcePath { get; set; } = string.Empty;
 
     public string DestinationPath { get; set; } = string.Empty;
@@ -532,6 +554,10 @@ public sealed class AuditCopyRecord
     public bool Success { get; set; }
 
     public bool Skipped { get; set; }
+
+    public bool IsConflictVaultCopy { get; set; }
+
+    public string CopyRole { get; set; } = string.Empty;
 
     public string Message { get; set; } = string.Empty;
 

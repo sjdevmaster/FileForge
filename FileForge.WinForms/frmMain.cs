@@ -25,6 +25,7 @@ public partial class frmMain : Form
     private readonly List<SourceFileRecord> _scannedFiles = new();
     private readonly List<ConsolidationGroup> _groups = new();
     private readonly Dictionary<string, CopyResult> _copyResultsByRelativePath = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<CopyResult> _copyResultRecords = new();
     private readonly Dictionary<string, CopyVerificationResult> _verificationResultsByRelativePath = new(StringComparer.OrdinalIgnoreCase);
     private ResultsMode _resultsMode = ResultsMode.Scan;
 
@@ -880,12 +881,11 @@ public partial class frmMain : Form
         txtTargetFolder.Text = targetRoot;
 
         List<ConsolidationGroup> copyableGroups = _groups
-            .Where(g => g.SelectedFile != null &&
-                        (g.Status == ConsolidationStatus.Unique ||
-                         g.Status == ConsolidationStatus.DuplicateSameContent))
+            .Where(IsMainArchiveCandidate)
             .ToList();
 
-        int skippedGroups = _groups.Count - copyableGroups.Count;
+        int autoResolvedConflicts = copyableGroups.Count(g => g.Status == ConsolidationStatus.ConflictDifferentContent);
+        int skippedGroups = _groups.Count(g => g.Status == ConsolidationStatus.Error);
 
         if (copyableGroups.Count == 0)
         {
@@ -894,8 +894,10 @@ public partial class frmMain : Form
         }
 
         DialogResult confirm = MessageBox.Show(
-            $"Copy {copyableGroups.Count:N0} selected winner file(s) to the target archive?\n\n" +
-            $"Skipped conflicts/errors: {skippedGroups:N0}\n" +
+            $"Copy {copyableGroups.Count:N0} main archive file(s) to the target archive?\n\n" +
+            $"Auto-resolved conflicts: {autoResolvedConflicts:N0}\n" +
+            $"Skipped errors: {skippedGroups:N0}\n" +
+            $"Older-dated conflicting versions will be preserved under _FileForge_Conflicts.\n\n" +
             $"Target: {targetRoot}",
             "Confirm Copy",
             MessageBoxButtons.YesNo,
@@ -914,6 +916,7 @@ public partial class frmMain : Form
             SetStatus("Copying", "Preparing target archive folder...");
 
             _copyResultsByRelativePath.Clear();
+            _copyResultRecords.Clear();
             _verificationResultsByRelativePath.Clear();
             Directory.CreateDirectory(targetRoot);
 
@@ -926,6 +929,7 @@ public partial class frmMain : Form
 
             int copied = 0;
             int failed = 0;
+            int conflictVaultCopied = 0;
             int total = copyableGroups.Count;
 
             foreach (ConsolidationGroup group in copyableGroups)
@@ -935,28 +939,91 @@ public partial class frmMain : Form
 
                 SetStatus("Copying", $"Copying {copied + failed + 1:N0}/{total:N0}: {group.RelativePath}");
 
-                CopyResult result = await Task.Run(() => CopyOneFile(group.RelativePath, selectedFile.FullPath, destinationFile));
-                _copyResultsByRelativePath[group.RelativePath] = result;
+                CopyResult mainResult = await Task.Run(() => CopyOneFile(
+                    group.RelativePath,
+                    selectedFile.FullPath,
+                    destinationFile,
+                    group.RelativePath,
+                    group.Status == ConsolidationStatus.ConflictDifferentContent
+                        ? "Conflict Auto-Resolved"
+                        : "Main Archive"));
 
-                if (result.Success)
+                if (group.Status == ConsolidationStatus.ConflictDifferentContent && mainResult.Success)
+                {
+                    mainResult.Message =
+                        "Conflict auto-resolved. Main archive version selected by latest modified date. " +
+                        "Older-dated conflicting versions preserved under _FileForge_Conflicts.";
+                }
+
+                _copyResultsByRelativePath[group.RelativePath] = mainResult;
+                _copyResultRecords.Add(mainResult);
+
+                if (mainResult.Success)
                     copied++;
                 else
                     failed++;
+
+                if (group.Status == ConsolidationStatus.ConflictDifferentContent)
+                {
+                    List<SourceFileRecord> olderConflictingVersions = group.Files
+                        .Where(f => !string.Equals(f.FullPath, selectedFile.FullPath, StringComparison.OrdinalIgnoreCase))
+                        .OrderByDescending(f => f.LastModifiedTime)
+                        .ThenByDescending(f => f.SizeBytes)
+                        .ThenBy(f => f.FullPath, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    int vaultIndex = 0;
+
+                    foreach (SourceFileRecord olderFile in olderConflictingVersions)
+                    {
+                        vaultIndex++;
+                        string vaultDestination = BuildConflictVaultDestination(
+                            targetRoot,
+                            group.RelativePath,
+                            olderFile,
+                            vaultIndex);
+
+                        string vaultRelativePath = Path.GetRelativePath(targetRoot, vaultDestination);
+
+                        SetStatus("Copying", $"Preserving conflict version: {group.RelativePath}");
+
+                        CopyResult vaultResult = await Task.Run(() => CopyOneFile(
+                            vaultRelativePath,
+                            olderFile.FullPath,
+                            vaultDestination,
+                            group.RelativePath,
+                            "Older-dated conflicting version preserved under _FileForge_Conflicts."));
+
+                        vaultResult.IsConflictVaultCopy = true;
+                        vaultResult.CopyRole = "Conflict Vault";
+                        _copyResultRecords.Add(vaultResult);
+
+                        if (vaultResult.Success)
+                            conflictVaultCopied++;
+                        else
+                            failed++;
+                    }
+                }
             }
 
             foreach (ConsolidationGroup group in _groups)
             {
-                if (group.Status == ConsolidationStatus.ConflictDifferentContent || group.Status == ConsolidationStatus.Error)
+                if (group.Status == ConsolidationStatus.Error)
                 {
-                    _copyResultsByRelativePath[group.RelativePath] = new CopyResult
+                    CopyResult skippedResult = new()
                     {
                         RelativePath = group.RelativePath,
+                        OriginalRelativePath = group.RelativePath,
                         SourcePath = group.SelectedFile?.FullPath ?? string.Empty,
                         DestinationPath = Path.Combine(targetRoot, group.RelativePath),
                         Success = false,
                         Skipped = true,
-                        Message = "Skipped because this group is a conflict or error and requires review."
+                        CopyRole = "Skipped Error",
+                        Message = "Skipped because this group has an error and requires review."
                     };
+
+                    _copyResultsByRelativePath[group.RelativePath] = skippedResult;
+                    _copyResultRecords.Add(skippedResult);
                 }
             }
 
@@ -977,16 +1044,16 @@ public partial class frmMain : Form
 
             if (failed > 0)
             {
-                SetStatus("Copy completed with errors", $"Copied: {copied:N0}. Failed: {failed:N0}. Skipped: {skippedGroups:N0}.{emptyDirText}", true);
+                SetStatus("Copy completed with errors", $"Copied: {copied:N0}. Conflict vault: {conflictVaultCopied:N0}. Failed: {failed:N0}. Skipped errors: {skippedGroups:N0}.{emptyDirText}", true);
                 MessageBox.Show(
-                    $"Copy completed with errors.\n\nCopied: {copied:N0}\nFailed: {failed:N0}\nSkipped: {skippedGroups:N0}\n{emptyDirText}",
+                    $"Copy completed with errors.\n\nCopied to main archive: {copied:N0}\nConflict vault copies: {conflictVaultCopied:N0}\nFailed: {failed:N0}\nSkipped errors: {skippedGroups:N0}\n{emptyDirText}",
                     "Copy Completed With Errors",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
             }
             else
             {
-                SetStatus("Copy complete", $"Copied: {copied:N0}. Skipped: {skippedGroups:N0}.{emptyDirText}");
+                SetStatus("Copy complete", $"Copied to main archive: {copied:N0}. Conflict vault copies: {conflictVaultCopied:N0}. Skipped errors: {skippedGroups:N0}.{emptyDirText}");
 
                 if (_openTargetFolderAfterCopy)
                     OpenFolder(targetRoot);
@@ -1026,9 +1093,7 @@ public partial class frmMain : Form
         }
 
         List<ConsolidationGroup> expectedGroups = _groups
-            .Where(g => g.SelectedFile != null &&
-                        (g.Status == ConsolidationStatus.Unique ||
-                         g.Status == ConsolidationStatus.DuplicateSameContent))
+            .Where(IsMainArchiveCandidate)
             .ToList();
 
         if (expectedGroups.Count == 0)
@@ -1343,17 +1408,26 @@ public partial class frmMain : Form
 
     private List<AuditCopyRecord> BuildAuditCopyRecords()
     {
-        return _copyResultsByRelativePath.Values
-            .OrderBy(r => r.RelativePath, StringComparer.OrdinalIgnoreCase)
+        IEnumerable<CopyResult> records = _copyResultRecords.Count > 0
+            ? _copyResultRecords
+            : _copyResultsByRelativePath.Values;
+
+        return records
+            .OrderBy(r => r.OriginalRelativePath, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(r => r.IsConflictVaultCopy ? 1 : 0)
+            .ThenBy(r => r.RelativePath, StringComparer.OrdinalIgnoreCase)
             .Select(r => new AuditCopyRecord
             {
                 RelativePath = r.RelativePath,
+                OriginalRelativePath = r.OriginalRelativePath,
                 SourcePath = r.SourcePath,
                 DestinationPath = r.DestinationPath,
                 Success = r.Success,
                 Skipped = r.Skipped,
                 Message = r.Message,
-                BytesCopied = r.BytesCopied
+                BytesCopied = r.BytesCopied,
+                CopyRole = r.CopyRole,
+                IsConflictVaultCopy = r.IsConflictVaultCopy
             })
             .ToList();
     }
@@ -1388,13 +1462,15 @@ public partial class frmMain : Form
         });
     }
 
-    private static CopyResult CopyOneFile(string relativePath, string sourceFile, string destinationFile)
+    private static CopyResult CopyOneFile(string relativePath, string sourceFile, string destinationFile, string? originalRelativePath = null, string copyRole = "Main Archive")
     {
         CopyResult result = new()
         {
             RelativePath = relativePath,
+            OriginalRelativePath = string.IsNullOrWhiteSpace(originalRelativePath) ? relativePath : originalRelativePath,
             SourcePath = sourceFile,
-            DestinationPath = destinationFile
+            DestinationPath = destinationFile,
+            CopyRole = copyRole
         };
 
         try
@@ -1431,7 +1507,9 @@ public partial class frmMain : Form
             }
 
             result.Success = true;
-            result.Message = "Copied successfully. Size matched.";
+            result.Message = string.Equals(copyRole, "Main Archive", StringComparison.OrdinalIgnoreCase)
+                ? "Copied successfully. Size matched."
+                : copyRole;
             result.BytesCopied = destinationInfo.Length;
             return result;
         }
@@ -1442,6 +1520,57 @@ public partial class frmMain : Form
             return result;
         }
     }
+
+    private string BuildConflictVaultDestination(
+        string targetRoot,
+        string originalRelativePath,
+        SourceFileRecord conflictFile,
+        int conflictIndex)
+    {
+        string fileName = Path.GetFileName(originalRelativePath);
+        string relativeDirectory = Path.GetDirectoryName(originalRelativePath) ?? string.Empty;
+
+        string sourceName = SafePathSegment(new DirectoryInfo(conflictFile.SourceRoot).Name);
+        if (string.IsNullOrWhiteSpace(sourceName))
+            sourceName = $"Source-{SourceOrderIndex(conflictFile.SourceRoot) + 1:00}";
+
+        string sourceFolder = $"Source-{SourceOrderIndex(conflictFile.SourceRoot) + 1:00}-{sourceName}";
+
+        string conflictRoot = Path.Combine(targetRoot, "_FileForge_Conflicts");
+
+        string destinationFolder = string.IsNullOrWhiteSpace(relativeDirectory)
+            ? Path.Combine(conflictRoot, fileName, sourceFolder)
+            : Path.Combine(conflictRoot, relativeDirectory, fileName, sourceFolder);
+
+        string destinationFile = Path.Combine(destinationFolder, fileName);
+
+        if (!File.Exists(destinationFile))
+            return destinationFile;
+
+        string extension = Path.GetExtension(fileName);
+        string nameWithoutExtension = Path.GetFileNameWithoutExtension(fileName);
+        string numberedFileName = $"{nameWithoutExtension}_{conflictIndex:00}{extension}";
+        return Path.Combine(destinationFolder, numberedFileName);
+    }
+
+    private static string SafePathSegment(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "Source";
+
+        char[] invalid = Path.GetInvalidFileNameChars();
+        StringBuilder sb = new(value.Length);
+
+        foreach (char ch in value)
+            sb.Append(invalid.Contains(ch) ? '_' : ch);
+
+        string cleaned = sb.ToString().Trim();
+
+        return string.IsNullOrWhiteSpace(cleaned)
+            ? "Source"
+            : cleaned;
+    }
+
 
     private static int CreateEmptyDirectoryStructure(IReadOnlyList<string> sourceRoots, string targetRoot)
     {
@@ -1483,7 +1612,11 @@ public partial class frmMain : Form
 
             row.Cells["Status"].Value = result.Skipped
                 ? "Skipped"
-                : result.Success ? "Copied" : "Copy Failed";
+                : result.Success
+                    ? (string.Equals(result.CopyRole, "Conflict Auto-Resolved", StringComparison.OrdinalIgnoreCase)
+                        ? "Conflict Auto-Resolved"
+                        : "Copied")
+                    : "Copy Failed";
 
             row.DefaultCellStyle.ForeColor = result.Skipped
                 ? Color.FromArgb(125, 82, 0)
@@ -1627,14 +1760,27 @@ public partial class frmMain : Form
         if (group.SelectedFile != null)
         {
             SourceFileRecord selected = group.SelectedFile;
-            sb.AppendLine("Selected File");
-            sb.AppendLine("-------------");
+            sb.AppendLine(group.Status == ConsolidationStatus.ConflictDifferentContent
+                ? "Main Archive Version"
+                : "Selected File");
+            sb.AppendLine(group.Status == ConsolidationStatus.ConflictDifferentContent
+                ? "--------------------"
+                : "-------------");
             sb.AppendLine($"Source Root   : {selected.SourceRoot}");
             sb.AppendLine($"Full Path     : {selected.FullPath}");
             sb.AppendLine($"Size          : {FormatBytes(selected.SizeBytes)} ({selected.SizeBytes:N0} bytes)");
             sb.AppendLine($"Modified      : {selected.LastModifiedTime:yyyy-MM-dd HH:mm:ss}");
             sb.AppendLine($"Hash          : {(selected.HashCalculated ? selected.Sha256Hash : "Not required/calculated")}");
             sb.AppendLine();
+
+            if (group.Status == ConsolidationStatus.ConflictDifferentContent)
+            {
+                sb.AppendLine("Conflict Auto-Resolution");
+                sb.AppendLine("------------------------");
+                sb.AppendLine("Main archive version selected by latest modified date.");
+                sb.AppendLine("Older-dated conflicting versions are preserved under _FileForge_Conflicts during Copy.");
+                sb.AppendLine();
+            }
         }
 
         sb.AppendLine("All Source Candidates");
@@ -1648,7 +1794,10 @@ public partial class frmMain : Form
             bool isSelected = group.SelectedFile != null &&
                               string.Equals(group.SelectedFile.FullPath, file.FullPath, StringComparison.OrdinalIgnoreCase);
 
-            sb.AppendLine(isSelected ? "[SELECTED]" : "[SKIPPED]");
+            if (group.Status == ConsolidationStatus.ConflictDifferentContent)
+                sb.AppendLine(isSelected ? "[MAIN ARCHIVE - LATEST MODIFIED]" : "[CONFLICT VAULT - OLDER-DATED VERSION]");
+            else
+                sb.AppendLine(isSelected ? "[SELECTED]" : "[SKIPPED]");
             sb.AppendLine($"Source Root   : {file.SourceRoot}");
             sb.AppendLine($"Full Path     : {file.FullPath}");
             sb.AppendLine($"Size          : {FormatBytes(file.SizeBytes)} ({file.SizeBytes:N0} bytes)");
@@ -1731,6 +1880,37 @@ public partial class frmMain : Form
                 sb.AppendLine($"Bytes Copied  : {copyResult.BytesCopied:N0} ({FormatBytes(copyResult.BytesCopied)})");
         }
 
+        if (group.Status == ConsolidationStatus.ConflictDifferentContent)
+        {
+            List<CopyResult> vaultCopies = _copyResultRecords
+                .Where(r => r.IsConflictVaultCopy &&
+                            string.Equals(r.OriginalRelativePath, group.RelativePath, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(r => r.RelativePath, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            sb.AppendLine();
+            sb.AppendLine("Conflict Auto-Resolution");
+            sb.AppendLine("------------------------");
+            sb.AppendLine("Main archive version selected by latest modified date.");
+            sb.AppendLine("Older-dated conflicting versions preserved under _FileForge_Conflicts.");
+
+            if (vaultCopies.Count > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine("Conflict Vault Copies");
+                sb.AppendLine("---------------------");
+
+                foreach (CopyResult vaultCopy in vaultCopies)
+                {
+                    sb.AppendLine(vaultCopy.Success ? "[PRESERVED]" : "[FAILED]");
+                    sb.AppendLine($"Source        : {vaultCopy.SourcePath}");
+                    sb.AppendLine($"Vault Target  : {vaultCopy.DestinationPath}");
+                    sb.AppendLine($"Message       : {vaultCopy.Message}");
+                    sb.AppendLine();
+                }
+            }
+        }
+
         sb.AppendLine();
         sb.AppendLine("Analysis Details");
         sb.AppendLine("----------------");
@@ -1740,18 +1920,29 @@ public partial class frmMain : Form
     }
 
 
+    private static bool IsMainArchiveCandidate(ConsolidationGroup group)
+    {
+        return group.SelectedFile != null &&
+               (group.Status == ConsolidationStatus.Unique ||
+                group.Status == ConsolidationStatus.DuplicateSameContent ||
+                group.Status == ConsolidationStatus.ConflictDifferentContent);
+    }
+
     private ArchiveStatistics CalculateArchiveStatistics()
     {
         int uniqueGroups = _groups.Count(g => g.Status == ConsolidationStatus.Unique && g.SelectedFile != null);
         int duplicateGroups = _groups.Count(g => g.Status == ConsolidationStatus.DuplicateSameContent && g.SelectedFile != null);
-        int conflictGroups = _groups.Count(g => g.Status == ConsolidationStatus.ConflictDifferentContent || g.Status == ConsolidationStatus.Error);
+        int conflictGroups = _groups.Count(g => g.Status == ConsolidationStatus.ConflictDifferentContent);
+        int errorGroups = _groups.Count(g => g.Status == ConsolidationStatus.Error);
 
-        int toArchiveFiles = _groups.Count(g => g.SelectedFile != null &&
-                                                (g.Status == ConsolidationStatus.Unique ||
-                                                 g.Status == ConsolidationStatus.DuplicateSameContent));
+        int toArchiveFiles = _groups.Count(IsMainArchiveCandidate);
 
         int duplicateFilesSkipped = _groups
             .Where(g => g.Status == ConsolidationStatus.DuplicateSameContent)
+            .Sum(g => Math.Max(0, g.Files.Count - 1));
+
+        int conflictVaultFiles = _groups
+            .Where(g => g.Status == ConsolidationStatus.ConflictDifferentContent && g.SelectedFile != null)
             .Sum(g => Math.Max(0, g.Files.Count - 1));
 
         return new ArchiveStatistics
@@ -1759,8 +1950,10 @@ public partial class frmMain : Form
             UniqueGroups = uniqueGroups,
             DuplicateGroups = duplicateGroups,
             ConflictGroups = conflictGroups,
+            ErrorGroups = errorGroups,
             ToArchiveFiles = toArchiveFiles,
-            DuplicateFilesSkipped = duplicateFilesSkipped
+            DuplicateFilesSkipped = duplicateFilesSkipped,
+            ConflictVaultFiles = conflictVaultFiles
         };
     }
 
@@ -1769,6 +1962,7 @@ public partial class frmMain : Form
         _scannedFiles.Clear();
         _groups.Clear();
         _copyResultsByRelativePath.Clear();
+        _copyResultRecords.Clear();
         _verificationResultsByRelativePath.Clear();
         _resultsMode = ResultsMode.Scan;
         dgvResults.Rows.Clear();
@@ -1894,9 +2088,13 @@ internal sealed class ArchiveStatistics
 
     public int ConflictGroups { get; set; }
 
+    public int ErrorGroups { get; set; }
+
     public int ToArchiveFiles { get; set; }
 
     public int DuplicateFilesSkipped { get; set; }
+
+    public int ConflictVaultFiles { get; set; }
 }
 
 internal enum ResultsMode
@@ -1911,6 +2109,8 @@ internal sealed class CopyResult
 {
     public string RelativePath { get; set; } = string.Empty;
 
+    public string OriginalRelativePath { get; set; } = string.Empty;
+
     public string SourcePath { get; set; } = string.Empty;
 
     public string DestinationPath { get; set; } = string.Empty;
@@ -1918,6 +2118,10 @@ internal sealed class CopyResult
     public bool Success { get; set; }
 
     public bool Skipped { get; set; }
+
+    public bool IsConflictVaultCopy { get; set; }
+
+    public string CopyRole { get; set; } = "Main Archive";
 
     public string Message { get; set; } = string.Empty;
 
