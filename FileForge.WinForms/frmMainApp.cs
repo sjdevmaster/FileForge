@@ -348,14 +348,16 @@ namespace FileForge.WinForms
             gridResults.Columns.Add("colNo", "#");
             gridResults.Columns.Add("colRelativePath", "Relative Path");
             gridResults.Columns.Add("colDecision", "Decision");
+            gridResults.Columns.Add("colVerifyStatus", "Verify Status");
             gridResults.Columns.Add("colMainSource", "Main Archive Source");
             gridResults.Columns.Add("colOther", "Other Sources / Info");
             gridResults.Columns.Add("colSize", "Size");
             gridResults.Columns.Add("colModified", "Modified");
 
             gridResults.Columns["colNo"].FillWeight = 8;
-            gridResults.Columns["colRelativePath"].FillWeight = 34;
+            gridResults.Columns["colRelativePath"].FillWeight = 32;
             gridResults.Columns["colDecision"].FillWeight = 24;
+            gridResults.Columns["colVerifyStatus"].FillWeight = 18;
             gridResults.Columns["colMainSource"].FillWeight = 30;
             gridResults.Columns["colOther"].FillWeight = 32;
             gridResults.Columns["colSize"].FillWeight = 14;
@@ -1693,6 +1695,7 @@ namespace FileForge.WinForms
                     i.ToString("N0"),
                     file.RelativePath,
                     "Scanned",
+                    string.Empty,
                     file.SourceRoot,
                     file.FullPath,
                     FormatBytes(file.SizeBytes),
@@ -1718,6 +1721,7 @@ namespace FileForge.WinForms
                     i.ToString("N0"),
                     group.RelativePath,
                     FormatStatus(group.Status),
+                    BuildVerifyStatusText(group.RelativePath),
                     selected?.FullPath ?? string.Empty,
                     otherInfo,
                     selected == null ? string.Empty : FormatBytes(selected.SizeBytes),
@@ -1741,14 +1745,13 @@ namespace FileForge.WinForms
                 _copyResultsByRelativePath.TryGetValue(group.RelativePath, out AppCopyResult? copyResult);
                 SourceFileRecord? selected = group.SelectedFile;
 
-                string decision = copyResult == null
-                    ? FormatStatus(group.Status)
-                    : copyResult.Success ? "Copied" : copyResult.Skipped ? "Skipped" : "Copy Failed";
+                string verifyStatus = BuildVerifyStatusText(group.RelativePath);
 
                 int row = gridResults.Rows.Add(
                     i.ToString("N0"),
                     group.RelativePath,
-                    decision,
+                    FormatStatus(group.Status),
+                    verifyStatus,
                     selected?.FullPath ?? string.Empty,
                     copyResult?.Message ?? BuildOtherInfo(group),
                     selected == null ? string.Empty : FormatBytes(selected.SizeBytes),
@@ -1774,14 +1777,15 @@ namespace FileForge.WinForms
                 _verificationResultsByRelativePath.TryGetValue(group.RelativePath, out CopyVerificationResult? verification);
                 SourceFileRecord? selected = group.SelectedFile;
 
-                string decision = verification == null
+                string verifyStatus = verification == null
                     ? "Not Verified"
                     : verification.IsVerified ? "Verified" : "Verification Failed";
 
                 int row = gridResults.Rows.Add(
                     i.ToString("N0"),
                     group.RelativePath,
-                    decision,
+                    FormatStatus(group.Status),
+                    verifyStatus,
                     selected?.FullPath ?? string.Empty,
                     verification?.Message ?? BuildOtherInfo(group),
                     selected == null ? string.Empty : FormatBytes(selected.SizeBytes),
@@ -1794,6 +1798,14 @@ namespace FileForge.WinForms
             }
 
             SelectFirstGridRow();
+        }
+
+        private string BuildVerifyStatusText(string relativePath)
+        {
+            if (_verificationResultsByRelativePath.TryGetValue(relativePath, out CopyVerificationResult? verification))
+                return verification.IsVerified ? "Verified" : "Verification Failed";
+
+            return _resultsMode == AppResultsMode.Scan ? string.Empty : "Not Verified";
         }
 
         private IEnumerable<SourceFileRecord> FilterFiles(IEnumerable<SourceFileRecord> files)
