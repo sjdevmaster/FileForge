@@ -749,6 +749,7 @@ namespace FileForge.WinForms
             bool hasAnalysis = _groups.Count > 0;
             bool hasCopy = _copyResultRecords.Any(r => r.Success && !r.IsConflictVaultCopy);
             bool hasVerify = _verificationResultsByRelativePath.Count > 0;
+            bool isTargetSafeForCopy = IsTargetSafeForCopy(hasSources, hasTarget);
 
             lblSourceSub.Text = hasSources
                 ? $"{lstSources.Items.Count:N0} source root(s) selected."
@@ -765,13 +766,24 @@ namespace FileForge.WinForms
             btnBrowseTarget.Enabled = !_isBusy;
             btnOpenTarget.Enabled = !_isBusy && hasTarget && Directory.Exists(txtTarget.Text);
 
-            ApplyToolbarState(btnScan, !_isBusy && hasSources && hasTarget, hasSources && hasTarget && !hasScan, hasScan);
+            ApplyToolbarState(btnScan, !_isBusy && hasSources, hasSources && !hasScan, hasScan);
             ApplyToolbarState(btnAnalyze, !_isBusy && hasScan, hasScan && !hasAnalysis, hasAnalysis);
-            ApplyToolbarState(btnCopy, !_isBusy && hasAnalysis, hasAnalysis && !hasCopy, hasCopy);
+            ApplyToolbarState(btnCopy, !_isBusy && hasAnalysis && (isTargetSafeForCopy || hasCopy), hasAnalysis && !hasCopy && isTargetSafeForCopy, hasCopy);
             ApplyToolbarState(btnVerify, !_isBusy && hasCopy, hasCopy && !hasVerify, hasVerify);
             ApplyToolbarState(btnReport, !_isBusy && hasVerify, hasVerify, false);
 
             UpdateTargetSafetyStatus();
+        }
+
+        private bool IsTargetSafeForCopy(bool hasSources, bool hasTarget)
+        {
+            if (!hasSources || !hasTarget)
+            {
+                return false;
+            }
+
+            TargetPreflightResult result = _targetPreflightService.ValidateNewArchiveTarget(GetSourceFolders(), txtTarget.Text.Trim());
+            return result.IsValid;
         }
 
         private void ApplyToolbarState(Button button, bool enabled, bool active, bool completed)
@@ -961,11 +973,6 @@ namespace FileForge.WinForms
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(txtTarget.Text))
-            {
-                MessageBox.Show("Please select an archive target folder.", "FileForge", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
 
             try
             {
