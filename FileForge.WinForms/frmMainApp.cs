@@ -1248,10 +1248,13 @@ namespace FileForge.WinForms
                     CopyRecords = _copyResultRecords.Select(r => new AuditCopyRecord
                     {
                         RelativePath = r.RelativePath,
+                        OriginalRelativePath = r.OriginalRelativePath,
                         SourcePath = r.SourcePath,
                         DestinationPath = r.DestinationPath,
                         Success = r.Success,
                         Skipped = r.Skipped,
+                        IsConflictVaultCopy = r.IsConflictVaultCopy,
+                        CopyRole = r.CopyRole,
                         Message = r.Message,
                         BytesCopied = r.BytesCopied
                     }).ToList(),
