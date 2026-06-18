@@ -12,6 +12,12 @@ namespace FileForge.WinForms
 {
     public class frmMainApp : Form
     {
+        private const string AppName = "FileForge";
+        private const string AppVersionNo = "0.1";
+        private const string AppReleaseName = "V1 Working Prototype";
+        private const string AppReleaseDate = "18 June 2026";
+        private const string AppDevelopedBy = "Santosh J.";
+
         private readonly Color _pageBack = Color.FromArgb(245, 248, 252);
         private readonly Color _cardBack = Color.White;
         private readonly Color _border = Color.FromArgb(204, 214, 228);
@@ -32,6 +38,8 @@ namespace FileForge.WinForms
         private Label lblTitle = null!;
         private Label lblTagline = null!;
         private Button btnOptions = null!;
+        private Button btnHelp = null!;
+        private ContextMenuStrip menuHelp = null!;
 
         private Button btnScan = null!;
         private Button btnAnalyze = null!;
@@ -150,6 +158,24 @@ namespace FileForge.WinForms
 
             btnOptions = CreateHeaderButton("⚙  Options");
             pnlHeader.Controls.Add(btnOptions);
+
+            btnHelp = CreateHeaderButton("Help");
+            btnHelp.Image = CreateHelpIcon(_muted);
+            btnHelp.ImageAlign = ContentAlignment.MiddleLeft;
+            btnHelp.TextAlign = ContentAlignment.MiddleCenter;
+            btnHelp.TextImageRelation = TextImageRelation.ImageBeforeText;
+            btnHelp.Padding = new Padding(8, 0, 8, 0);
+            pnlHeader.Controls.Add(btnHelp);
+
+            menuHelp = new ContextMenuStrip
+            {
+                Font = new Font("Segoe UI", 9F)
+            };
+
+            menuHelp.Items.Add("Help Contents...", null, (_, _) => ShowHelpContentsDialog());
+            menuHelp.Items.Add(new ToolStripSeparator());
+            menuHelp.Items.Add("Disclaimer...", null, (_, _) => ShowDisclaimerDialog());
+            menuHelp.Items.Add("About FileForge...", null, (_, _) => ShowAboutDialog());
         }
 
         private void BuildToolbar()
@@ -408,7 +434,12 @@ namespace FileForge.WinForms
             pnlHeader.SetBounds(0, 0, w, headerH);
             lblTitle.Location = new Point(margin, 8);
             lblTagline.Location = new Point(margin + 2, 43);
-            btnOptions.SetBounds(w - margin - 116, 18, 116, 32);
+
+            int helpW = 86;
+            int optionsW = 116;
+            int headerButtonGap = 8;
+            btnHelp.SetBounds(w - margin - helpW, 18, helpW, 32);
+            btnOptions.SetBounds(w - margin - helpW - headerButtonGap - optionsW, 18, optionsW, 32);
 
             pnlToolbar.SetBounds(0, headerH, w, toolbarH);
             LayoutToolbarButtons(margin, 8);
@@ -693,6 +724,7 @@ namespace FileForge.WinForms
             btnBrowseTarget.Click += BtnSelectTarget_Click;
             btnOpenTarget.Click += BtnOpenTarget_Click;
             btnOptions.Click += BtnOptions_Click;
+            btnHelp.Click += BtnHelp_Click;
 
             btnScan.Click += BtnScan_Click;
             btnAnalyze.Click += BtnAnalyze_Click;
@@ -1244,6 +1276,222 @@ namespace FileForge.WinForms
             {
                 UpdateUiState();
             }
+        }
+
+        private Bitmap CreateHelpIcon(Color color)
+        {
+            Bitmap bmp = new(18, 18);
+
+            using Graphics g = Graphics.FromImage(bmp);
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.Clear(Color.Transparent);
+
+            using Pen pen = new(color, 1.8F)
+            {
+                StartCap = System.Drawing.Drawing2D.LineCap.Round,
+                EndCap = System.Drawing.Drawing2D.LineCap.Round,
+                LineJoin = System.Drawing.Drawing2D.LineJoin.Round
+            };
+
+            using Brush brush = new SolidBrush(color);
+
+            g.DrawEllipse(pen, 2, 2, 14, 14);
+            using Font qFont = new("Segoe UI", 9F, FontStyle.Bold, GraphicsUnit.Point);
+            g.DrawString("?", qFont, brush, 5.2F, 1.4F);
+
+            return bmp;
+        }
+
+        private void BtnHelp_Click(object? sender, EventArgs e)
+        {
+            menuHelp.Show(btnHelp, new Point(0, btnHelp.Height));
+        }
+
+        private void ShowHelpContentsDialog()
+        {
+            using Form dialog = new()
+            {
+                Text = "FileForge Help",
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                ClientSize = new Size(620, 430),
+                BackColor = Color.White,
+                Font = new Font("Segoe UI", 9F)
+            };
+
+            Label title = new()
+            {
+                Text = "FileForge Help",
+                Font = new Font("Segoe UI", 16F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(0, 47, 93),
+                Location = new Point(24, 20),
+                AutoSize = true
+            };
+
+            TextBox helpText = new()
+            {
+                Location = new Point(24, 70),
+                Size = new Size(572, 286),
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Vertical,
+                BorderStyle = BorderStyle.FixedSingle,
+                BackColor = Color.FromArgb(248, 250, 253),
+                ForeColor = _text,
+                Text =
+                    "Basic Workflow\r\n" +
+                    "1. Add one or more Source Folders.\r\n" +
+                    "2. Select an Archive Target folder.\r\n" +
+                    "3. Click Scan to discover files.\r\n" +
+                    "4. Click Analyze to identify unique files, duplicates and conflicts.\r\n" +
+                    "5. Click Copy to create the archive.\r\n" +
+                    "6. Click Verify to confirm copied files.\r\n" +
+                    "7. Click Report to generate the audit report.\r\n\r\n" +
+                    "Important Notes\r\n" +
+                    "- The archive target must be a safe, empty folder.\r\n" +
+                    "- Keep original source folders until verification is complete.\r\n" +
+                    "- Conflicting older versions are preserved in the conflict vault.\r\n" +
+                    "- Use Options for archive-mode settings such as preserving empty directories."
+            };
+
+            Button ok = CreateSecondaryButton("OK");
+            ok.DialogResult = DialogResult.OK;
+            ok.SetBounds(506, 376, 90, 30);
+
+            dialog.Controls.AddRange(new Control[] { title, helpText, ok });
+            dialog.AcceptButton = ok;
+            dialog.ShowDialog(this);
+        }
+
+        private void ShowDisclaimerDialog()
+        {
+            using Form dialog = new()
+            {
+                Text = "FileForge Disclaimer",
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                ClientSize = new Size(660, 390),
+                BackColor = Color.White,
+                Font = new Font("Segoe UI", 9F)
+            };
+
+            Label title = new()
+            {
+                Text = "Disclaimer",
+                Font = new Font("Segoe UI", 16F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(0, 47, 93),
+                Location = new Point(24, 20),
+                AutoSize = true
+            };
+
+            TextBox disclaimer = new()
+            {
+                Location = new Point(24, 70),
+                Size = new Size(612, 246),
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Vertical,
+                BorderStyle = BorderStyle.FixedSingle,
+                BackColor = Color.FromArgb(248, 250, 253),
+                ForeColor = _text,
+                Text =
+                    "FileForge is provided as an assistance tool for file consolidation and archive preparation.\r\n\r\n" +
+                    "The user is responsible for selecting the correct source folders and target archive location. " +
+                    "Always keep the original data and independent backups until the archive has been reviewed and verified.\r\n\r\n" +
+                    "No software can guarantee protection against data loss, device failure, wrong folder selection, file corruption, or user error. " +
+                    "The developer shall not be liable for loss, damage, corruption, deletion, business interruption, or any consequence arising from the use or misuse of this software."
+            };
+
+            Button ok = CreateSecondaryButton("OK");
+            ok.DialogResult = DialogResult.OK;
+            ok.SetBounds(546, 338, 90, 30);
+
+            dialog.Controls.AddRange(new Control[] { title, disclaimer, ok });
+            dialog.AcceptButton = ok;
+            dialog.ShowDialog(this);
+        }
+
+        private void ShowAboutDialog()
+        {
+            using Form dialog = new()
+            {
+                Text = "About FileForge",
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                ClientSize = new Size(560, 340),
+                BackColor = Color.White,
+                Font = new Font("Segoe UI", 9F)
+            };
+
+            Label title = new()
+            {
+                Text = AppName,
+                Font = new Font("Segoe UI", 22F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(0, 47, 93),
+                Location = new Point(28, 24),
+                AutoSize = true
+            };
+
+            Label subtitle = new()
+            {
+                Text = "Professional File Consolidation and Archive Verification",
+                Font = new Font("Segoe UI", 9.5F, FontStyle.Regular),
+                ForeColor = _muted,
+                Location = new Point(32, 70),
+                AutoSize = true
+            };
+
+            Label details = new()
+            {
+                Text =
+                    $"Version No. : {AppVersionNo}\r\n" +
+                    $"Release     : {AppReleaseName}\r\n" +
+                    $"Release Date: {AppReleaseDate}\r\n" +
+                    $"Developed by: {AppDevelopedBy}",
+                Location = new Point(32, 118),
+                Size = new Size(490, 90),
+                Font = new Font("Consolas", 9.5F, FontStyle.Regular),
+                ForeColor = _text
+            };
+
+            Label copyright = new()
+            {
+                Text = $"Copyright © {DateTime.Now.Year} {AppDevelopedBy}. All rights reserved.",
+                Location = new Point(32, 222),
+                Size = new Size(490, 24),
+                ForeColor = _text
+            };
+
+            Label note = new()
+            {
+                Text = "For help and usage guidance, open Help > Help Contents.",
+                Location = new Point(32, 252),
+                Size = new Size(490, 24),
+                ForeColor = _muted
+            };
+
+            Button ok = CreateSecondaryButton("OK");
+            ok.DialogResult = DialogResult.OK;
+            ok.SetBounds(440, 292, 90, 30);
+
+            dialog.Controls.AddRange(new Control[]
+            {
+                title,
+                subtitle,
+                details,
+                copyright,
+                note,
+                ok
+            });
+
+            dialog.AcceptButton = ok;
+            dialog.ShowDialog(this);
         }
 
         private void BtnOptions_Click(object? sender, EventArgs e)
