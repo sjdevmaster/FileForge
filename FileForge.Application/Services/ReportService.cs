@@ -62,16 +62,16 @@ public sealed class ReportService
         sb.AppendLine($"<div class=\"stamp\">Generated<br><strong>{Html(request.GeneratedAt.ToString("yyyy-MM-dd HH:mm:ss"))}</strong></div>");
         sb.AppendLine("</section>");
 
-        sb.AppendLine("<section class=\"summary-grid\">");
-        AddMetric(sb, "Sources", request.SourceRoots.Count);
-        AddMetric(sb, "Total Files", request.TotalFiles);
-        AddMetric(sb, "To Archive", request.ToArchiveFiles);
-        AddMetric(sb, "Dup. Skipped", request.DuplicateFilesSkipped);
-        AddMetric(sb, "Conflicts", request.ConflictGroups);
-        AddMetric(sb, "Verified", verified);
+        sb.AppendLine("<section class=\"summary-grid\" aria-label=\"Report navigation summary\">");
+        AddMetric(sb, "Sources", request.SourceRoots.Count, "#sources-section");
+        AddMetric(sb, "Total Files", request.TotalFiles, "#archive-decisions-section");
+        AddMetric(sb, "To Archive", request.ToArchiveFiles, "#archive-decisions-section");
+        AddMetric(sb, "Dup. Skipped", request.DuplicateFilesSkipped, "#decision-summary-section");
+        AddMetric(sb, "Conflicts", request.ConflictGroups, "#conflicts-section");
+        AddMetric(sb, "Verified", verified, "#verification-summary-section");
         sb.AppendLine("</section>");
 
-        sb.AppendLine("<section class=\"card\">");
+        sb.AppendLine("<section class=\"card\" id=\"archive-context-section\">");
         sb.AppendLine("<h2>Archive Context</h2>");
         sb.AppendLine("<table class=\"kv\">");
         AddKv(sb, "Application", request.ApplicationName);
@@ -83,7 +83,7 @@ public sealed class ReportService
         sb.AppendLine("</table>");
         sb.AppendLine("</section>");
 
-        sb.AppendLine("<section class=\"card\">");
+        sb.AppendLine("<section class=\"card\" id=\"sources-section\">");
         sb.AppendLine("<h2>Selected Source Roots</h2>");
         sb.AppendLine("<ol class=\"paths\">");
         foreach (string sourceRoot in request.SourceRoots)
@@ -91,7 +91,7 @@ public sealed class ReportService
         sb.AppendLine("</ol>");
         sb.AppendLine("</section>");
 
-        sb.AppendLine("<section class=\"card\">");
+        sb.AppendLine("<section class=\"card\" id=\"decision-summary-section\">");
         sb.AppendLine("<h2>Decision Summary</h2>");
         sb.AppendLine("<table>");
         sb.AppendLine("<thead><tr><th>Decision</th><th class=\"num\">Groups</th><th>Meaning</th></tr></thead>");
@@ -104,7 +104,7 @@ public sealed class ReportService
         sb.AppendLine("</table>");
         sb.AppendLine("</section>");
 
-        sb.AppendLine("<section class=\"card\">");
+        sb.AppendLine("<section class=\"card\" id=\"copy-summary-section\">");
         sb.AppendLine("<h2>Copy Summary</h2>");
         sb.AppendLine("<div class=\"mini-grid\">");
         AddMiniMetric(sb, "Main Archive", copied);
@@ -114,7 +114,7 @@ public sealed class ReportService
         sb.AppendLine("</div>");
         sb.AppendLine("</section>");
 
-        sb.AppendLine("<section class=\"card\">");
+        sb.AppendLine("<section class=\"card\" id=\"verification-summary-section\">");
         sb.AppendLine("<h2>Verification Summary</h2>");
         if (!verificationPerformed)
         {
@@ -162,6 +162,7 @@ public sealed class ReportService
     --line: #d7dde8;
 }
 * { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
 body {
     margin: 0;
     background: var(--bg);
@@ -204,6 +205,16 @@ body {
 }
 .metric .label, .mini-metric .label { color: var(--muted); font-size: 12px; }
 .metric .value { font-size: 24px; font-weight: 700; margin-top: 4px; }
+.metric-link {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+    cursor: pointer;
+    transition: border-color .15s ease, transform .15s ease;
+}
+.metric-link:hover { border-color: var(--blue); transform: translateY(-1px); }
+.metric-link:focus { outline: 2px solid var(--blue); outline-offset: 2px; }
+.metric-link .label::after { content: "  ↴"; color: var(--blue); font-weight: 700; }
 .mini-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -255,12 +266,21 @@ tr:last-child td { border-bottom: none; }
 """;
     }
 
-    private static void AddMetric(StringBuilder sb, string label, int value)
+    private static void AddMetric(StringBuilder sb, string label, int value, string href)
     {
-        sb.AppendLine("<div class=\"metric\">");
+        if (string.IsNullOrWhiteSpace(href))
+        {
+            sb.AppendLine("<div class=\"metric\">");
+            sb.AppendLine($"<div class=\"label\">{Html(label)}</div>");
+            sb.AppendLine($"<div class=\"value\">{value:N0}</div>");
+            sb.AppendLine("</div>");
+            return;
+        }
+
+        sb.AppendLine($"<a class=\"metric metric-link\" href=\"{Html(href)}\" title=\"Jump to {Html(label)} section\">");
         sb.AppendLine($"<div class=\"label\">{Html(label)}</div>");
         sb.AppendLine($"<div class=\"value\">{value:N0}</div>");
-        sb.AppendLine("</div>");
+        sb.AppendLine("</a>");
     }
 
     private static void AddMiniMetric(StringBuilder sb, string label, int value)
@@ -288,11 +308,18 @@ tr:last-child td { border-bottom: none; }
             .OrderBy(g => g.RelativePath, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        if (conflicts.Count == 0)
-            return;
-
-        sb.AppendLine("<section class=\"card\">");
+        sb.AppendLine("<section class=\"card\" id=\"conflicts-section\">");
         sb.AppendLine("<h2>Auto-Resolved Conflicts</h2>");
+
+        if (conflicts.Count == 0)
+        {
+            sb.AppendLine("<p>No auto-resolved conflicts were found in this archive run.</p>");
+            sb.AppendLine("</section>");
+            AddConflictVaultSection(sb, request);
+            AddErrorSection(sb, request);
+            return;
+        }
+
         sb.AppendLine("<p class=\"warning\">Conflict auto-resolved. Main archive version selected by latest modified date. Older-dated conflicting versions preserved under _FileForge_Conflicts.</p>");
         sb.AppendLine("<table>");
         sb.AppendLine("<thead><tr><th>Relative Path</th><th>Main Archive Source</th><th>Resolution</th><th class=\"num\">Older Versions</th></tr></thead>");
@@ -332,7 +359,7 @@ tr:last-child td { border-bottom: none; }
         if (vaultRecords.Count == 0)
             return;
 
-        sb.AppendLine("<section class=\"card\">");
+        sb.AppendLine("<section class=\"card\" id=\"conflict-vault-section\">");
         sb.AppendLine("<h2>Conflict Vault Copies</h2>");
         sb.AppendLine("<table>");
         sb.AppendLine("<thead><tr><th>Original Relative Path</th><th>Vault Relative Path</th><th>Source</th><th>Target</th><th>Status</th></tr></thead>");
@@ -366,7 +393,7 @@ tr:last-child td { border-bottom: none; }
         if (errors.Count == 0)
             return;
 
-        sb.AppendLine("<section class=\"card\">");
+        sb.AppendLine("<section class=\"card\" id=\"errors-section\">");
         sb.AppendLine("<h2>Errors Requiring Review</h2>");
         sb.AppendLine("<table>");
         sb.AppendLine("<thead><tr><th>Relative Path</th><th>Reason</th><th class=\"num\">Candidates</th></tr></thead>");
@@ -396,7 +423,7 @@ tr:last-child td { border-bottom: none; }
         if (failed.Count == 0)
             return;
 
-        sb.AppendLine("<section class=\"card\">");
+        sb.AppendLine("<section class=\"card\" id=\"copy-failures-section\">");
         sb.AppendLine("<h2>Copy Failures</h2>");
         sb.AppendLine("<table>");
         sb.AppendLine("<thead><tr><th>Relative Path</th><th>Reason</th><th>Source</th><th>Target</th></tr></thead>");
@@ -427,7 +454,7 @@ tr:last-child td { border-bottom: none; }
         if (failed.Count == 0)
             return;
 
-        sb.AppendLine("<section class=\"card\">");
+        sb.AppendLine("<section class=\"card\" id=\"verification-failures-section\">");
         sb.AppendLine("<h2>Verification Failures</h2>");
         sb.AppendLine("<table>");
         sb.AppendLine("<thead><tr><th>Relative Path</th><th>Failure</th><th>Message</th><th>Source</th><th>Target</th></tr></thead>");
@@ -459,7 +486,7 @@ tr:last-child td { border-bottom: none; }
             .OrderBy(g => g.RelativePath, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        sb.AppendLine("<section class=\"card\">");
+        sb.AppendLine("<section class=\"card\" id=\"archive-decisions-section\">");
         sb.AppendLine("<h2>Archive Decisions</h2>");
         sb.AppendLine("<table>");
         sb.AppendLine("<thead><tr><th>Relative Path</th><th>Decision</th><th>Selected Source</th><th class=\"num\">Candidates</th><th class=\"num\">Size</th></tr></thead>");
