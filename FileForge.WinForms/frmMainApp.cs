@@ -307,7 +307,7 @@ namespace FileForge.WinForms
             title.Name = "lblResultsTitle";
             pnlResults.Controls.Add(title);
 
-            var subtitle = CreateSmallText("No analysis completed yet.");
+            var subtitle = CreateSmallText("Run Scan to display source files.");
             subtitle.Name = "lblResultsSub";
             pnlResults.Controls.Add(subtitle);
 
@@ -480,15 +480,29 @@ namespace FileForge.WinForms
 
         private void LayoutToolbarButtons(int x, int y)
         {
-            int bw = 118;
+            int scanW = 124;
+            int analyzeW = 144;
+            int copyW = 124;
+            int verifyW = 124;
+            int reportW = 124;
             int bh = 32;
             int g = 8;
 
-            btnScan.SetBounds(x, y, bw, bh);
-            btnAnalyze.SetBounds(x + (bw + g), y, bw, bh);
-            btnCopy.SetBounds(x + (bw + g) * 2, y, bw, bh);
-            btnVerify.SetBounds(x + (bw + g) * 3, y, bw, bh);
-            btnReport.SetBounds(x + (bw + g) * 4, y, bw, bh);
+            int currentX = x;
+
+            btnScan.SetBounds(currentX, y, scanW, bh);
+            currentX += scanW + g;
+
+            btnAnalyze.SetBounds(currentX, y, analyzeW, bh);
+            currentX += analyzeW + g;
+
+            btnCopy.SetBounds(currentX, y, copyW, bh);
+            currentX += copyW + g;
+
+            btnVerify.SetBounds(currentX, y, verifyW, bh);
+            currentX += verifyW + g;
+
+            btnReport.SetBounds(currentX, y, reportW, bh);
         }
 
         private void LayoutSourceCard()
@@ -641,7 +655,7 @@ namespace FileForge.WinForms
                 TextImageRelation = TextImageRelation.ImageBeforeText,
                 ImageAlign = ContentAlignment.MiddleLeft,
                 TextAlign = ContentAlignment.MiddleCenter,
-                Padding = new Padding(12, 0, 12, 0),
+                Padding = new Padding(8, 0, 8, 0),
                 Image = CreateToolbarIcon(icon, _muted)
             };
 
@@ -1671,8 +1685,42 @@ namespace FileForge.WinForms
             return bmp;
         }
 
+        private void SetResultsSubtitle(string text)
+        {
+            if (pnlResults.Controls["lblResultsSub"] is Control subtitle)
+            {
+                subtitle.Text = text;
+            }
+        }
+
+        private void UpdateResultsSubtitle()
+        {
+            string subtitle = _resultsMode switch
+            {
+                AppResultsMode.Analysis => _groups.Count == 0
+                    ? "No archive decisions available."
+                    : $"{_groups.Count:N0} archive decision group(s) shown. Decision truth is separate from verification status.",
+
+                AppResultsMode.Copy => _copyResultRecords.Count == 0
+                    ? "Copy not completed yet."
+                    : $"Copy results shown. Preserved records: {_copyResultRecords.Count:N0}. Main archive and conflict vault are tracked separately.",
+
+                AppResultsMode.Verify => _verificationResultsByRelativePath.Count == 0
+                    ? "Verification not completed yet."
+                    : $"{_verificationResultsByRelativePath.Count:N0} archived file(s) verified. Decision truth remains unchanged.",
+
+                _ => _scannedFiles.Count == 0
+                    ? "Run Scan to display source files."
+                    : $"{_scannedFiles.Count:N0} scanned file(s) shown."
+            };
+
+            SetResultsSubtitle(subtitle);
+        }
+
         private void RefreshCurrentGrid()
         {
+            UpdateResultsSubtitle();
+
             switch (_resultsMode)
             {
                 case AppResultsMode.Analysis:
