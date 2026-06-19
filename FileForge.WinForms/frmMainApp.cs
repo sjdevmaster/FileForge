@@ -307,7 +307,7 @@ namespace FileForge.WinForms
             title.Name = "lblResultsTitle";
             pnlResults.Controls.Add(title);
 
-            var subtitle = CreateSmallText("Run Scan to display source files.");
+            var subtitle = CreateSmallText("No analysis completed yet.");
             subtitle.Name = "lblResultsSub";
             pnlResults.Controls.Add(subtitle);
 
@@ -1080,18 +1080,11 @@ namespace FileForge.WinForms
             }
 
             AppArchiveStatistics stats = CalculateArchiveStatistics();
-            DialogResult confirm = MessageBox.Show(
-                $"Copy {copyableGroups.Count:N0} main archive file(s) to the target folder?\n\n" +
-                $"Duplicate files skipped: {stats.DuplicateFilesSkipped:N0}\n" +
-                $"Conflicting older versions preserved in vault: {stats.ConflictVaultFiles:N0}\n" +
-                $"Target: {targetRoot}",
-                "Confirm Copy",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Question);
+            bool copyApproved = ShowPreviewCopyPlanDialog(BuildPreviewCopyPlanText(stats, targetRoot, preflight));
 
-            if (confirm != DialogResult.Yes)
+            if (!copyApproved)
             {
-                SetStatus("Copy cancelled", "No files were copied.");
+                SetStatus("Copy cancelled", "Preview copy plan closed. No files were copied.");
                 return;
             }
 
@@ -2071,6 +2064,25 @@ namespace FileForge.WinForms
                 .Where(g => g.Status == ConsolidationStatus.ConflictDifferentContent && g.SelectedFile != null)
                 .Sum(g => Math.Max(0, g.Files.Count - 1));
 
+            long mainArchiveBytes = _groups
+                .Where(IsMainArchiveCandidate)
+                .Select(g => g.SelectedFile)
+                .Where(f => f != null)
+                .Cast<SourceFileRecord>()
+                .Sum(f => f.SizeBytes);
+
+            long duplicateBytesSkipped = _groups
+                .Where(g => g.Status == ConsolidationStatus.DuplicateSameContent && g.SelectedFile != null)
+                .Sum(g => g.Files
+                    .Where(f => !string.Equals(f.FullPath, g.SelectedFile!.FullPath, StringComparison.OrdinalIgnoreCase))
+                    .Sum(f => f.SizeBytes));
+
+            long conflictVaultBytes = _groups
+                .Where(g => g.Status == ConsolidationStatus.ConflictDifferentContent && g.SelectedFile != null)
+                .Sum(g => g.Files
+                    .Where(f => !string.Equals(f.FullPath, g.SelectedFile!.FullPath, StringComparison.OrdinalIgnoreCase))
+                    .Sum(f => f.SizeBytes));
+
             return new AppArchiveStatistics
             {
                 UniqueGroups = uniqueGroups,
@@ -2079,8 +2091,117 @@ namespace FileForge.WinForms
                 ErrorGroups = errorGroups,
                 ToArchiveFiles = toArchiveFiles,
                 DuplicateFilesSkipped = duplicateFilesSkipped,
-                ConflictVaultFiles = conflictVaultFiles
+                ConflictVaultFiles = conflictVaultFiles,
+                MainArchiveBytes = mainArchiveBytes,
+                DuplicateBytesSkipped = duplicateBytesSkipped,
+                ConflictVaultBytes = conflictVaultBytes
             };
+        }
+
+        private string BuildPreviewCopyPlanText(AppArchiveStatistics stats, string targetRoot, TargetPreflightResult preflight)
+        {
+            long totalPreservedBytes = stats.MainArchiveBytes + stats.ConflictVaultBytes;
+
+            StringBuilder sb = new();
+
+            sb.AppendLine("Preview Copy Plan");
+            sb.AppendLine("=================");
+            sb.AppendLine();
+            sb.AppendLine("FileForge has analyzed the selected source folders. No files have been copied yet.");
+            sb.AppendLine("Review this plan before creating the archive.");
+            sb.AppendLine();
+            sb.AppendLine("Planned Archive Action");
+            sb.AppendLine("----------------------");
+            sb.AppendLine($"Main archive files              : {stats.ToArchiveFiles:N0}");
+            sb.AppendLine($"Duplicate files to skip          : {stats.DuplicateFilesSkipped:N0}");
+            sb.AppendLine($"Conflicts auto-resolved          : {stats.ConflictGroups:N0}");
+            sb.AppendLine($"Older conflict versions to vault : {stats.ConflictVaultFiles:N0}");
+            sb.AppendLine();
+            sb.AppendLine("Storage Impact");
+            sb.AppendLine("--------------");
+            sb.AppendLine($"Estimated main archive size      : {FormatBytes(stats.MainArchiveBytes)} ({stats.MainArchiveBytes:N0} bytes)");
+            sb.AppendLine($"Estimated conflict vault size    : {FormatBytes(stats.ConflictVaultBytes)} ({stats.ConflictVaultBytes:N0} bytes)");
+            sb.AppendLine($"Total copied/preserved size      : {FormatBytes(totalPreservedBytes)} ({totalPreservedBytes:N0} bytes)");
+            sb.AppendLine($"Storage saved by duplicate skip  : {FormatBytes(stats.DuplicateBytesSkipped)} ({stats.DuplicateBytesSkipped:N0} bytes)");
+            sb.AppendLine();
+            sb.AppendLine("Target Safety");
+            sb.AppendLine("-------------");
+            sb.AppendLine($"Target status                    : {(preflight.IsValid ? "Safe" : "Blocked")}");
+            sb.AppendLine($"Target folder                    : {targetRoot}");
+            if (!string.IsNullOrWhiteSpace(preflight.Message))
+                sb.AppendLine($"Safety message                   : {preflight.Message}");
+            sb.AppendLine();
+            sb.AppendLine("Decision Rules");
+            sb.AppendLine("--------------");
+            sb.AppendLine("Same relative path + same content: one copy goes to the main archive; duplicate copies are skipped.");
+            sb.AppendLine("Same relative path + different content: latest modified version goes to the main archive; older versions go to _FileForge_Conflicts.");
+            sb.AppendLine("No existing target files are overwritten.");
+            sb.AppendLine("No source files are deleted or modified.");
+            sb.AppendLine();
+            sb.AppendLine("Continue with Copy?");
+
+            return sb.ToString();
+        }
+
+        private bool ShowPreviewCopyPlanDialog(string copyPlanText)
+        {
+            using Form dialog = new()
+            {
+                Text = "Preview Copy Plan",
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                ClientSize = new Size(760, 560),
+                BackColor = Color.White,
+                Font = new Font("Segoe UI", 9F)
+            };
+
+            Label title = new()
+            {
+                Text = "Preview Copy Plan",
+                Font = new Font("Segoe UI", 16F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(0, 47, 93),
+                Location = new Point(24, 18),
+                AutoSize = true
+            };
+
+            Label subtitle = new()
+            {
+                Text = "Review the planned archive action before FileForge copies anything.",
+                ForeColor = _muted,
+                Location = new Point(26, 52),
+                Size = new Size(700, 24)
+            };
+
+            TextBox plan = new()
+            {
+                Location = new Point(24, 84),
+                Size = new Size(712, 394),
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Both,
+                WordWrap = false,
+                BorderStyle = BorderStyle.FixedSingle,
+                BackColor = Color.FromArgb(248, 250, 253),
+                ForeColor = _text,
+                Font = new Font("Consolas", 9F, FontStyle.Regular),
+                Text = copyPlanText
+            };
+
+            Button proceed = CreateDarkButton("Copy Now");
+            proceed.DialogResult = DialogResult.OK;
+            proceed.SetBounds(540, 506, 96, 32);
+
+            Button cancel = CreateSecondaryButton("Cancel");
+            cancel.DialogResult = DialogResult.Cancel;
+            cancel.SetBounds(646, 506, 90, 32);
+
+            dialog.Controls.AddRange(new Control[] { title, subtitle, plan, proceed, cancel });
+            dialog.AcceptButton = proceed;
+            dialog.CancelButton = cancel;
+
+            return dialog.ShowDialog(this) == DialogResult.OK;
         }
 
         private static AppCopyResult CopyOneFile(string relativePath, string sourceFile, string destinationFile, string? originalRelativePath = null, string copyRole = "Main Archive")
@@ -2620,6 +2741,9 @@ namespace FileForge.WinForms
         public int ToArchiveFiles { get; set; }
         public int DuplicateFilesSkipped { get; set; }
         public int ConflictVaultFiles { get; set; }
+        public long MainArchiveBytes { get; set; }
+        public long DuplicateBytesSkipped { get; set; }
+        public long ConflictVaultBytes { get; set; }
     }
 
     internal enum AppResultsMode
