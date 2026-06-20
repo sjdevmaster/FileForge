@@ -72,6 +72,7 @@ namespace FileForge.WinForms
         private MetricCard metricToArchive = null!;
         private MetricCard metricDuplicates = null!;
         private MetricCard metricConflicts = null!;
+        private MetricCard metricStorageSaved = null!;
         private MetricCard metricVerified = null!;
 
         private ComboBox cmbDecisionFilter = null!;
@@ -290,11 +291,12 @@ namespace FileForge.WinForms
             metricToArchive = new MetricCard("To Archive", "0", Color.FromArgb(18, 134, 76), MetricIcon.Archive);
             metricDuplicates = new MetricCard("Duplicates Skipped", "0", Color.FromArgb(96, 55, 180), MetricIcon.Duplicate);
             metricConflicts = new MetricCard("Conflicts Auto-Resolved", "0", Color.FromArgb(230, 105, 15), MetricIcon.Conflict);
+            metricStorageSaved = new MetricCard("Storage Saved", "0 B", Color.FromArgb(30, 96, 190), MetricIcon.Duplicate);
             metricVerified = new MetricCard("Verified", "0", Color.FromArgb(18, 134, 76), MetricIcon.Verify);
 
             pnlSummary.Controls.AddRange(new Control[]
             {
-                metricTotalFiles, metricToArchive, metricDuplicates, metricConflicts, metricVerified
+                metricTotalFiles, metricToArchive, metricDuplicates, metricConflicts, metricStorageSaved, metricVerified
             });
         }
 
@@ -562,11 +564,11 @@ namespace FileForge.WinForms
         private void LayoutSummary()
         {
             int m = 10;
-            int count = 5;
+            int count = 6;
             int itemW = (pnlSummary.ClientSize.Width - (m * 2)) / count;
             int x = m;
 
-            foreach (MetricCard card in new[] { metricTotalFiles, metricToArchive, metricDuplicates, metricConflicts, metricVerified })
+            foreach (MetricCard card in new[] { metricTotalFiles, metricToArchive, metricDuplicates, metricConflicts, metricStorageSaved, metricVerified })
             {
                 card.SetBounds(x, 7, itemW - 8, pnlSummary.ClientSize.Height - 14);
                 x += itemW;
@@ -887,15 +889,16 @@ namespace FileForge.WinForms
             _resultsMode = AppResultsMode.Scan;
             gridResults.Rows.Clear();
             txtDetails.Text = "Decision details will appear here.";
-            UpdateMetrics(0, 0, 0, 0, 0);
+            UpdateMetrics(0, 0, 0, 0, 0, 0);
         }
 
-        private void UpdateMetrics(int totalFiles, int toArchiveFiles, int duplicateFilesSkipped, int conflictGroups, int verifiedOk)
+        private void UpdateMetrics(int totalFiles, int toArchiveFiles, int duplicateFilesSkipped, int conflictGroups, long storageSavedBytes, int verifiedOk)
         {
             metricTotalFiles.SetValue(totalFiles.ToString("N0"));
             metricToArchive.SetValue(toArchiveFiles.ToString("N0"));
             metricDuplicates.SetValue(duplicateFilesSkipped.ToString("N0"));
             metricConflicts.SetValue(conflictGroups.ToString("N0"));
+            metricStorageSaved.SetValue(FormatBytes(storageSavedBytes));
             metricVerified.SetValue(verifiedOk.ToString("N0"));
         }
 
@@ -1001,7 +1004,7 @@ namespace FileForge.WinForms
                 _resultsMode = AppResultsMode.Scan;
 
                 RefreshCurrentGrid();
-                UpdateMetrics(_scannedFiles.Count, 0, 0, 0, 0);
+                UpdateMetrics(_scannedFiles.Count, 0, 0, 0, 0, 0);
                 SetStatus("Scan complete", $"Files found: {_scannedFiles.Count:N0}.");
             }
             catch (Exception ex)
@@ -1037,7 +1040,7 @@ namespace FileForge.WinForms
 
                 RefreshCurrentGrid();
                 AppArchiveStatistics stats = CalculateArchiveStatistics();
-                UpdateMetrics(_scannedFiles.Count, stats.ToArchiveFiles, stats.DuplicateFilesSkipped, stats.ConflictGroups, 0);
+                UpdateMetrics(_scannedFiles.Count, stats.ToArchiveFiles, stats.DuplicateFilesSkipped, stats.ConflictGroups, stats.DuplicateBytesSkipped, 0);
 
                 SetStatus("Analyze complete", $"To archive: {stats.ToArchiveFiles:N0}. Duplicate files skipped: {stats.DuplicateFilesSkipped:N0}. Conflicts auto-resolved: {stats.ConflictGroups:N0}. Files hashed: {hashedCount:N0}.");
             }
@@ -1148,7 +1151,7 @@ namespace FileForge.WinForms
 
                 _resultsMode = AppResultsMode.Copy;
                 RefreshCurrentGrid();
-                UpdateMetrics(_scannedFiles.Count, stats.ToArchiveFiles, stats.DuplicateFilesSkipped, stats.ConflictGroups, 0);
+                UpdateMetrics(_scannedFiles.Count, stats.ToArchiveFiles, stats.DuplicateFilesSkipped, stats.ConflictGroups, stats.DuplicateBytesSkipped, 0);
 
                 string emptyText = _preserveEmptyDirectories ? $" Empty folders recreated: {emptyDirectoriesCreated:N0}." : string.Empty;
                 SetStatus(failed == 0 ? "Copy complete" : "Copy completed with errors", $"Copied/preserved: {copied:N0}. Failed: {failed:N0}.{emptyText}", failed > 0);
@@ -1207,7 +1210,7 @@ namespace FileForge.WinForms
                 AppArchiveStatistics stats = CalculateArchiveStatistics();
                 int verified = results.Count(r => r.IsVerified);
                 int failed = results.Count - verified;
-                UpdateMetrics(_scannedFiles.Count, stats.ToArchiveFiles, stats.DuplicateFilesSkipped, stats.ConflictGroups, verified);
+                UpdateMetrics(_scannedFiles.Count, stats.ToArchiveFiles, stats.DuplicateFilesSkipped, stats.ConflictGroups, stats.DuplicateBytesSkipped, verified);
 
                 SetStatus(failed == 0 ? "Verify complete" : "Verify completed with failures", $"Verified: {verified:N0}. Failed: {failed:N0}.", failed > 0);
             }
@@ -2610,7 +2613,7 @@ namespace FileForge.WinForms
 
                 using Brush titleBrush = new SolidBrush(Color.FromArgb(88, 103, 128));
                 using Brush valueBrush = new SolidBrush(_accent);
-                using Font titleFont = new("Segoe UI", 8.5F, FontStyle.Regular);
+                using Font titleFont = new("Segoe UI", 8F, FontStyle.Regular);
                 using Font valueFont = new("Segoe UI", 14F, FontStyle.Bold);
 
                 int textX = 48;

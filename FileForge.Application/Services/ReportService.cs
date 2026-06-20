@@ -41,6 +41,24 @@ public sealed class ReportService
         int verificationFailed = request.VerificationResults.Count(r => !r.IsVerified);
         bool verificationPerformed = request.VerificationResults.Count > 0;
 
+        long mainArchiveBytes = request.CopyRecords
+            .Where(r => r.Success && !r.Skipped && !r.IsConflictVaultCopy)
+            .Sum(r => r.BytesCopied);
+
+        long conflictVaultBytes = request.CopyRecords
+            .Where(r => r.Success && r.IsConflictVaultCopy)
+            .Sum(r => r.BytesCopied);
+
+        long totalPreservedBytes = mainArchiveBytes + conflictVaultBytes;
+        long storageSavedBytes = CalculateStorageSavedBytes(request);
+        ArchiveHealthSummary archiveHealth = BuildArchiveHealthSummary(
+            request,
+            copyFailed,
+            verificationFailed,
+            verified,
+            verificationPerformed,
+            storageSavedBytes);
+
         StringBuilder sb = new();
 
         sb.AppendLine("<!DOCTYPE html>");
@@ -67,9 +85,12 @@ public sealed class ReportService
         AddMetric(sb, "Total Files", request.TotalFiles, "#archive-decisions-section");
         AddMetric(sb, "To Archive", request.ToArchiveFiles, "#archive-decisions-section");
         AddMetric(sb, "Dup. Skipped", request.DuplicateFilesSkipped, "#decision-summary-section");
+        AddMetric(sb, "Storage Saved", FormatBytes(storageSavedBytes), "#storage-summary-section");
         AddMetric(sb, "Conflicts", request.ConflictGroups, "#conflicts-section");
         AddMetric(sb, "Verified", verified, "#verification-summary-section");
         sb.AppendLine("</section>");
+
+        AddArchiveHealthSection(sb, archiveHealth);
 
         sb.AppendLine("<section class=\"card\" id=\"archive-context-section\">");
         sb.AppendLine("<h2>Archive Context</h2>");
@@ -112,6 +133,17 @@ public sealed class ReportService
         AddMiniMetric(sb, "Failed", copyFailed);
         AddMiniMetric(sb, "Skipped", copySkipped);
         sb.AppendLine("</div>");
+        sb.AppendLine("</section>");
+
+        sb.AppendLine("<section class=\"card\" id=\"storage-summary-section\">");
+        sb.AppendLine("<h2>Storage Summary</h2>");
+        sb.AppendLine("<div class=\"mini-grid\">");
+        AddMiniMetric(sb, "Main Archive Size", FormatBytes(mainArchiveBytes));
+        AddMiniMetric(sb, "Conflict Vault Size", FormatBytes(conflictVaultBytes));
+        AddMiniMetric(sb, "Total Preserved Size", FormatBytes(totalPreservedBytes));
+        AddMiniMetric(sb, "Storage Saved", FormatBytes(storageSavedBytes));
+        sb.AppendLine("</div>");
+        sb.AppendLine("<p class=\"note\">Storage Saved means duplicate same-content bytes that FileForge avoided copying into the main archive. No source files are deleted.</p>");
         sb.AppendLine("</section>");
 
         sb.AppendLine("<section class=\"card\" id=\"verification-summary-section\">");
@@ -192,7 +224,7 @@ body {
 .stamp strong { color: #fff; }
 .summary-grid {
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(7, 1fr);
     gap: 12px;
     margin: 18px 0;
 }
@@ -250,6 +282,20 @@ tr:last-child td { border-bottom: none; }
 .bad { color: var(--red); }
 .warn { color: var(--amber); }
 .warning { color: var(--amber); font-weight: 600; }
+.health-banner {
+    border: 1px solid var(--line);
+    border-left: 6px solid var(--blue);
+    border-radius: 12px;
+    padding: 14px 16px;
+    background: #f8fbff;
+    margin-bottom: 14px;
+}
+.health-banner.good { border-left-color: var(--green); color: var(--ink); }
+.health-banner.warn { border-left-color: var(--amber); color: var(--ink); }
+.health-banner.bad { border-left-color: var(--red); color: var(--ink); }
+.health-title { font-size: 22px; font-weight: 800; margin: 0 0 6px; }
+.health-message { margin: 0; color: var(--muted); }
+.note { color: var(--muted); margin: 12px 0 0; }
 .footer { color: var(--muted); font-size: 12px; text-align: center; padding: 18px; }
 @media print {
     body { background: #fff; }
@@ -264,6 +310,172 @@ tr:last-child td { border-bottom: none; }
 }
 </style>
 """;
+    }
+
+
+    private static ArchiveHealthSummary BuildArchiveHealthSummary(
+        AuditReportRequest request,
+        int copyFailed,
+        int verificationFailed,
+        int verified,
+        bool verificationPerformed,
+        long storageSavedBytes)
+    {
+        if (copyFailed > 0)
+        {
+            return new ArchiveHealthSummary
+            {
+                Verdict = "Action Required — Copy Failures",
+                CssClass = "bad",
+                Message = "One or more files failed during copy. Review copy failures before trusting this archive.",
+                VerifiedText = verificationPerformed ? $"{verified:N0} / {request.ToArchiveFiles:N0}" : "Not verified",
+                FailureCount = copyFailed + verificationFailed,
+                ConflictCount = request.ConflictGroups,
+                DuplicateSkippedCount = request.DuplicateFilesSkipped,
+                StorageSavedText = FormatBytes(storageSavedBytes)
+            };
+        }
+
+        if (verificationPerformed && verificationFailed > 0)
+        {
+            return new ArchiveHealthSummary
+            {
+                Verdict = "Action Required — Verification Failed",
+                CssClass = "bad",
+                Message = "Some archived files failed verification. The archive should not be treated as clean until failures are resolved.",
+                VerifiedText = $"{verified:N0} / {request.ToArchiveFiles:N0}",
+                FailureCount = verificationFailed,
+                ConflictCount = request.ConflictGroups,
+                DuplicateSkippedCount = request.DuplicateFilesSkipped,
+                StorageSavedText = FormatBytes(storageSavedBytes)
+            };
+        }
+
+        if (!verificationPerformed)
+        {
+            return new ArchiveHealthSummary
+            {
+                Verdict = "Warning — Not Verified",
+                CssClass = "warn",
+                Message = "The archive report was generated before verification. Run Verify before treating this archive as complete.",
+                VerifiedText = "Not verified",
+                FailureCount = copyFailed,
+                ConflictCount = request.ConflictGroups,
+                DuplicateSkippedCount = request.DuplicateFilesSkipped,
+                StorageSavedText = FormatBytes(storageSavedBytes)
+            };
+        }
+
+        if (verified != request.ToArchiveFiles)
+        {
+            return new ArchiveHealthSummary
+            {
+                Verdict = "Warning — Verification Incomplete",
+                CssClass = "warn",
+                Message = "Verification did not cover every file expected in the main archive. Review verification details.",
+                VerifiedText = $"{verified:N0} / {request.ToArchiveFiles:N0}",
+                FailureCount = verificationFailed,
+                ConflictCount = request.ConflictGroups,
+                DuplicateSkippedCount = request.DuplicateFilesSkipped,
+                StorageSavedText = FormatBytes(storageSavedBytes)
+            };
+        }
+
+        string verdict;
+        string message;
+
+        if (request.ConflictGroups > 0 && request.DuplicateFilesSkipped > 0)
+        {
+            verdict = "Clean — Verified with Conflicts Preserved";
+            message = "All main archive files verified successfully. Same-content duplicates were skipped, and older conflicting versions were preserved in the conflict vault.";
+        }
+        else if (request.ConflictGroups > 0)
+        {
+            verdict = "Clean — Verified with Conflicts Preserved";
+            message = "All main archive files verified successfully. Older conflicting versions were preserved in the conflict vault.";
+        }
+        else if (request.DuplicateFilesSkipped > 0)
+        {
+            verdict = "Clean — Verified with Duplicates Skipped";
+            message = "All main archive files verified successfully. Same-content duplicate files were skipped from the archive copy.";
+        }
+        else
+        {
+            verdict = "Clean — Verified";
+            message = "All selected archive files copied and verified successfully.";
+        }
+
+        return new ArchiveHealthSummary
+        {
+            Verdict = verdict,
+            CssClass = "good",
+            Message = message,
+            VerifiedText = $"{verified:N0} / {request.ToArchiveFiles:N0}",
+            FailureCount = 0,
+            ConflictCount = request.ConflictGroups,
+            DuplicateSkippedCount = request.DuplicateFilesSkipped,
+            StorageSavedText = FormatBytes(storageSavedBytes)
+        };
+    }
+
+    private static void AddArchiveHealthSection(StringBuilder sb, ArchiveHealthSummary health)
+    {
+        sb.AppendLine("<section class=\"card\" id=\"archive-health-section\">");
+        sb.AppendLine("<h2>Archive Health</h2>");
+        sb.AppendLine($"<div class=\"health-banner {Html(health.CssClass)}\">");
+        sb.AppendLine($"<p class=\"health-title\">{Html(health.Verdict)}</p>");
+        sb.AppendLine($"<p class=\"health-message\">{Html(health.Message)}</p>");
+        sb.AppendLine("</div>");
+        sb.AppendLine("<div class=\"mini-grid\">");
+        AddMiniMetric(sb, "Verified", health.VerifiedText);
+        AddMiniMetric(sb, "Failures", health.FailureCount);
+        AddMiniMetric(sb, "Conflicts Preserved", health.ConflictCount);
+        AddMiniMetric(sb, "Duplicates Skipped", health.DuplicateSkippedCount);
+        AddMiniMetric(sb, "Storage Saved", health.StorageSavedText);
+        sb.AppendLine("</div>");
+        sb.AppendLine("<p class=\"note\">Archive Health is a summary verdict based on copy results, verification results, duplicate decisions, conflict preservation, and storage saved. It does not replace the detailed audit tables below.</p>");
+        sb.AppendLine("</section>");
+    }
+
+    private static long CalculateStorageSavedBytes(AuditReportRequest request)
+    {
+        long storageSavedBytes = 0;
+
+        foreach (ConsolidationGroup group in request.Groups)
+        {
+            if (group.Status != ConsolidationStatus.DuplicateSameContent || group.SelectedFile == null)
+                continue;
+
+            string selectedPath = group.SelectedFile.FullPath;
+
+            storageSavedBytes += group.Files
+                .Where(f => !string.Equals(f.FullPath, selectedPath, StringComparison.OrdinalIgnoreCase))
+                .Sum(f => f.SizeBytes);
+        }
+
+        return storageSavedBytes;
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 0)
+            bytes = 0;
+
+        string[] units = { "B", "KB", "MB", "GB", "TB" };
+        double value = bytes;
+        int unitIndex = 0;
+
+        while (value >= 1024 && unitIndex < units.Length - 1)
+        {
+            value /= 1024;
+            unitIndex++;
+        }
+
+        string formatted = unitIndex == 0
+            ? value.ToString("N0")
+            : value.ToString("N1");
+
+        return $"{formatted} {units[unitIndex]}";
     }
 
     private static void AddMetric(StringBuilder sb, string label, int value, string href)
@@ -283,11 +495,36 @@ tr:last-child td { border-bottom: none; }
         sb.AppendLine("</a>");
     }
 
+    private static void AddMetric(StringBuilder sb, string label, string value, string href)
+    {
+        if (string.IsNullOrWhiteSpace(href))
+        {
+            sb.AppendLine("<div class=\"metric\">");
+            sb.AppendLine($"<div class=\"label\">{Html(label)}</div>");
+            sb.AppendLine($"<div class=\"value\">{Html(value)}</div>");
+            sb.AppendLine("</div>");
+            return;
+        }
+
+        sb.AppendLine($"<a class=\"metric metric-link\" href=\"{Html(href)}\" title=\"Jump to {Html(label)} section\">");
+        sb.AppendLine($"<div class=\"label\">{Html(label)}</div>");
+        sb.AppendLine($"<div class=\"value\">{Html(value)}</div>");
+        sb.AppendLine("</a>");
+    }
+
     private static void AddMiniMetric(StringBuilder sb, string label, int value)
     {
         sb.AppendLine("<div class=\"mini-metric\">");
         sb.AppendLine($"<div class=\"label\">{Html(label)}</div>");
         sb.AppendLine($"<div class=\"value\">{value:N0}</div>");
+        sb.AppendLine("</div>");
+    }
+
+    private static void AddMiniMetric(StringBuilder sb, string label, string value)
+    {
+        sb.AppendLine("<div class=\"mini-metric\">");
+        sb.AppendLine($"<div class=\"label\">{Html(label)}</div>");
+        sb.AppendLine($"<div class=\"value\">{Html(value)}</div>");
         sb.AppendLine("</div>");
     }
 
@@ -525,6 +762,26 @@ tr:last-child td { border-bottom: none; }
     {
         return WebUtility.HtmlEncode(value ?? string.Empty);
     }
+}
+
+
+internal sealed class ArchiveHealthSummary
+{
+    public string Verdict { get; set; } = string.Empty;
+
+    public string CssClass { get; set; } = "good";
+
+    public string Message { get; set; } = string.Empty;
+
+    public string VerifiedText { get; set; } = string.Empty;
+
+    public int FailureCount { get; set; }
+
+    public int ConflictCount { get; set; }
+
+    public int DuplicateSkippedCount { get; set; }
+
+    public string StorageSavedText { get; set; } = string.Empty;
 }
 
 public sealed class AuditReportRequest
